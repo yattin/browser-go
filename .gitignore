@@ -1,0 +1,24 @@
+# Built Assets
+node_modules/
+build/
+metrics.json
+extensions/ublocklite
+dist/
+
+# MAC
+.DS_Store
+
+# Temp files
+.no-git/
+*.log
+.*cache*
+
+# Dev Files
+*.env*
+
+# Runtime Data
+browser_data
+test-*.png
+
+# Ignore all .tgz files
+*.tgz
