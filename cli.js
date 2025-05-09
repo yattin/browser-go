@@ -5,21 +5,77 @@ import chromeLauncher from 'chrome-launcher';
 import http from 'http';
 import httpProxy from 'http-proxy';
 import axios from 'axios';
-import * as dotenv from 'dotenv'
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
-dotenv.config()
 
+// 显示帮助信息
+function showHelp() {
+    console.log(`
+Browser-Go 服务启动工具
+
+用法: node cli.js [选项]
+
+选项:
+  --max-instances=<number>      最大并发实例数 (默认: 10)
+  --instance-timeout=<minutes>  实例超时时间，单位分钟 (默认: 60分钟)
+  --inactive-check-interval=<minutes> 检查不活跃实例的间隔，单位分钟 (默认: 5分钟)
+  --token=<string>             访问令牌 (默认: 'browser-go-token')
+  --help                       显示帮助信息
+
+示例:
+  node cli.js --max-instances=5 --instance-timeout=30
+  node cli.js --token=my-secret-token
+`);
+    process.exit(0);
+}
+
+// 解析命令行参数
+function parseArgs() {
+    const args = process.argv.slice(2);
+    const config = {
+        maxInstances: 10,
+        instanceTimeout: 60, // 默认60分钟
+        inactiveCheckInterval: 5, // 默认5分钟
+        token: 'browser-go-token'
+    };
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--help') {
+            showHelp();
+        }
+        if (arg.startsWith('--')) {
+            const [key, value] = arg.slice(2).split('=');
+            switch (key) {
+                case 'max-instances':
+                    config.maxInstances = parseInt(value) || 10;
+                    break;
+                case 'instance-timeout':
+                    config.instanceTimeout = parseInt(value) || 60;
+                    break;
+                case 'inactive-check-interval':
+                    config.inactiveCheckInterval = parseInt(value) || 5;
+                    break;
+                case 'token':
+                    config.token = value || 'browser-go-token';
+                    break;
+            }
+        }
+    }
+    return config;
+}
+
+const config = parseArgs();
 const app = express();
 const port = 3000;
 
 // 配置项
-const MAX_CONCURRENT_INSTANCES = parseInt(process.env.MAX_INSTANCES || '10'); // 最大并发实例数，默认为10
-const INSTANCE_TIMEOUT_MS = parseInt(process.env.INSTANCE_TIMEOUT_MS || '3600000'); // 实例超时时间，默认1小时
-const INACTIVE_CHECK_INTERVAL = parseInt(process.env.INACTIVE_CHECK_INTERVAL || '300000'); // 检查不活跃实例的间隔，默认5分钟
-const token = process.env.TOKEN || 'gwp69z1knv4am2tx'; // 从环境变量读取 token
+const MAX_CONCURRENT_INSTANCES = config.maxInstances;
+const INSTANCE_TIMEOUT_MS = config.instanceTimeout * 60 * 1000; // 将分钟转换为毫秒
+const INACTIVE_CHECK_INTERVAL = config.inactiveCheckInterval * 60 * 1000; // 将分钟转换为毫秒
+const token = config.token;
 
 let chromeInstances = {}; // 用于缓存 Chrome 实例
 let instanceLastActivity = {}; // 记录每个实例的最后活跃时间
@@ -269,6 +325,6 @@ app.get('/api/v1/browser/stats', (req, res) => {
 server.listen(port, '0.0.0.0', () => {
     logger.info(`Server is running on http://0.0.0.0:${port}`);
     logger.info(`最大并发实例数: ${MAX_CONCURRENT_INSTANCES}`);
-    logger.info(`实例超时时间: ${INSTANCE_TIMEOUT_MS}ms (${INSTANCE_TIMEOUT_MS / 60000} 分钟)`);
-    logger.info(`不活跃检查间隔: ${INACTIVE_CHECK_INTERVAL}ms (${INACTIVE_CHECK_INTERVAL / 60000} 分钟)`);
+    logger.info(`实例超时时间: ${INSTANCE_TIMEOUT_MS / 60000} 分钟`);
+    logger.info(`不活跃检查间隔: ${INACTIVE_CHECK_INTERVAL / 60000} 分钟`);
 });

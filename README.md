@@ -1,123 +1,151 @@
-# browser-go
+# Browser-Go
 
-一个基于Node.js的Chrome浏览器管理服务，可以通过WebSocket启动和管理多个Chrome浏览器实例。
+Browser-Go is a Chrome DevTools Protocol (CDP) based browser management service that supports multi-user concurrent access and session management.
 
-## 功能特性
+[中文文档](README.zh-CN.md)
 
-- 通过WebSocket启动Chrome浏览器实例
-- 支持多用户隔离（每个用户有自己的浏览器数据目录）
-- 提供REST API管理浏览器实例
-- 支持自定义Chrome启动参数
-- 并发实例数量限制，防止资源耗尽
-- 自动清理不活跃实例
+## Features
 
-## 安装步骤
+- Multi-user concurrent access support
+- Automatic browser instance lifecycle management
+- User session persistence
+- Automatic cleanup of inactive instances
+- RESTful API interface
+- WebSocket connection support
 
-1. 确保已安装Node.js (>=16.x)
-2. 克隆项目仓库
-3. 安装依赖：
+## System Requirements
+
+- Node.js 16.0 or higher
+- Chrome browser
+- Operating System: Windows/Linux/macOS
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yattin/browser-go.git
+cd browser-go
+```
+
+2. Install dependencies:
 ```bash
 npm install
 ```
-4. 创建.env文件并配置环境变量：
-```env
-TOKEN=your_secret_token
-MAX_INSTANCES=10
-INSTANCE_TIMEOUT_MS=3600000
-INACTIVE_CHECK_INTERVAL=300000
-```
 
-## 环境变量配置
+## Usage
 
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
-| TOKEN | 认证令牌 | 必填 |
-| MAX_INSTANCES | 最大并发浏览器实例数 | 10 |
-| INSTANCE_TIMEOUT_MS | 实例超时时间（毫秒） | 3600000 (1小时) |
-| INACTIVE_CHECK_INTERVAL | 检查不活跃实例的间隔（毫秒） | 300000 (5分钟) |
+### Starting the Service
 
-## 使用方法
-
-1. 启动服务：
 ```bash
-npm start
-```
-2. 通过WebSocket连接服务：
-```
-ws://localhost:3000/?token=your_token&startingUrl=https://example.com
+node cli.js [options]
 ```
 
-## API文档
+### Command Line Options
 
-### 停止浏览器实例
-- `GET /api/v1/browser/stop`
-- 参数：
-  - `user_id`: 环境ID
-- 成功响应：
-```json
-{
-  "code": 0,
-  "msg": "success"
-}
-```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--max-instances=<number>` | Maximum number of concurrent instances | 10 |
+| `--instance-timeout=<minutes>` | Instance timeout in minutes | 60 |
+| `--inactive-check-interval=<minutes>` | Interval for checking inactive instances in minutes | 5 |
+| `--token=<string>` | Access token | 'browser-go-token' |
+| `--help` | Show help information | - |
 
-### 列出浏览器实例
-- `GET /api/v1/browser/list`
-- 成功响应：
-```json
-{
-  "code": 0,
-  "data": [
-    {
-      "user_id": "user1",
-      "last_activity": "2023-05-01T12:34:56.789Z",
-      "idle_time_seconds": 120
-    }
-  ],
-  "stats": {
-    "current_instances": 1,
-    "max_instances": 10,
-    "instance_timeout_ms": 3600000
-  },
-  "msg": "success"
-}
-```
+### Examples
 
-### 查看系统状态
-- `GET /api/v1/browser/stats`
-- 成功响应：
-```json
-{
-  "code": 0,
-  "data": {
-    "current_instances": 1,
-    "max_instances": 10,
-    "available_slots": 9,
-    "instance_timeout_ms": 3600000,
-    "inactive_check_interval": 300000
-  },
-  "msg": "success"
-}
-```
-
-## 资源限制说明
-
-- 当达到最大实例数量限制时，新的连接请求会收到 `503 Service Unavailable` 错误
-- 连续不活跃超过 `INSTANCE_TIMEOUT_MS` 的实例会被自动清理
-- 系统会定期（每 `INACTIVE_CHECK_INTERVAL` 毫秒）检查并清理不活跃实例
-
-## 测试
-
-运行测试：
 ```bash
-npm test
+# Start with default configuration
+node cli.js
+
+# Start with custom configuration
+node cli.js --max-instances=5 --instance-timeout=30 --inactive-check-interval=2
+
+# Set custom access token
+node cli.js --token=my-secret-token
 ```
 
-## 依赖项
+## API Reference
 
-- express
-- chrome-launcher
-- axios
-- http-proxy
-- ws
-- dotenv
+### 1. Launch Browser Instance
+
+Launch a browser instance via WebSocket connection:
+
+```
+ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
+```
+
+Parameters:
+- `token`: Access token
+- `startingUrl`: URL to open after browser launch
+- `launch`: JSON format launch parameters (optional)
+  ```json
+  {
+    "user": "user123",  // User identifier for session persistence
+    "args": ["--window-size=1920,1080", "--lang=en-US"]  // Chrome launch arguments
+  }
+  ```
+
+### 2. Stop Browser Instance
+
+```
+GET /api/v1/browser/stop?user_id=<user_id>
+```
+
+### 3. List All Instances
+
+```
+GET /api/v1/browser/list
+```
+
+### 4. View System Status
+
+```
+GET /api/v1/browser/stats
+```
+
+## Configuration
+
+### Maximum Concurrent Instances
+
+Controls the maximum number of browser instances that can run simultaneously. New connection requests will be rejected when this limit is reached.
+
+### Instance Timeout
+
+Maximum survival time for browser instances in inactive state. Instances will be automatically closed after this time.
+
+### Check Interval
+
+Time interval for the system to check inactive instances. Adjust this value based on your actual usage.
+
+### Access Token
+
+Token used to authenticate client requests. Use a strong random value in production environment.
+
+## Notes
+
+1. Ensure sufficient system memory for running multiple Chrome instances
+2. Recommended to use a reverse proxy (e.g., Nginx) for load balancing in production
+3. Regularly check log files to monitor system status
+4. Adjust configuration parameters based on actual needs
+
+## Development
+
+### Project Structure
+
+```
+browser-go/
+├── cli.js          # Main entry point
+├── logger.js       # Logging module
+├── package.json    # Project configuration
+└── README.md       # Project documentation
+```
+
+### Dependencies
+
+- express: Web server framework
+- chrome-launcher: Chrome browser launcher
+- http-proxy: HTTP proxy
+- axios: HTTP client
+
+## License
+
+MIT License
