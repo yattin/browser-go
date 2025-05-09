@@ -13,18 +13,18 @@ import { logger } from './logger.js';
 // 显示帮助信息
 function showHelp() {
     console.log(`
-Browser-Go 服务启动工具
+Browser-Go Service Launcher
 
-用法: node cli.js [选项]
+Usage: node cli.js [options]
 
-选项:
-  --max-instances=<number>      最大并发实例数 (默认: 10)
-  --instance-timeout=<minutes>  实例超时时间，单位分钟 (默认: 60分钟)
-  --inactive-check-interval=<minutes> 检查不活跃实例的间隔，单位分钟 (默认: 5分钟)
-  --token=<string>             访问令牌 (默认: 'browser-go-token')
-  --help                       显示帮助信息
+Options:
+  --max-instances=<number>      Maximum concurrent instances (default: 10)
+  --instance-timeout=<minutes>  Instance timeout in minutes (default: 60 minutes)
+  --inactive-check-interval=<minutes>  Inactive instance check interval in minutes (default: 5 minutes)
+  --token=<string>             Access token (default: 'browser-go-token')
+  --help                       Show help information
 
-示例:
+Examples:
   node cli.js --max-instances=5 --instance-timeout=30
   node cli.js --token=my-secret-token
 `);
@@ -73,31 +73,31 @@ const port = 3000;
 
 // 配置项
 const MAX_CONCURRENT_INSTANCES = config.maxInstances;
-const INSTANCE_TIMEOUT_MS = config.instanceTimeout * 60 * 1000; // 将分钟转换为毫秒
-const INACTIVE_CHECK_INTERVAL = config.inactiveCheckInterval * 60 * 1000; // 将分钟转换为毫秒
+const INSTANCE_TIMEOUT_MS = config.instanceTimeout * 60 * 1000; // Convert minutes to milliseconds
+const INACTIVE_CHECK_INTERVAL = config.inactiveCheckInterval * 60 * 1000; // Convert minutes to milliseconds
 const token = config.token;
 
-let chromeInstances = {}; // 用于缓存 Chrome 实例
-let instanceLastActivity = {}; // 记录每个实例的最后活跃时间
+let chromeInstances = {}; // Cache for Chrome instances
+let instanceLastActivity = {}; // Record last activity time for each instance
 
-// 添加计算当前实例数量的函数
+// Add function to calculate current instance count
 const getCurrentInstanceCount = () => {
     return Object.keys(chromeInstances).length;
 };
 
-// 添加检查是否达到最大实例数的函数
+// Add function to check if max instances reached
 const reachedMaxInstances = () => {
     return getCurrentInstanceCount() >= MAX_CONCURRENT_INSTANCES;
 };
 
-// 添加更新实例活跃时间的函数
+// Add function to update instance activity time
 const updateInstanceActivity = (userKey) => {
     if (userKey && chromeInstances[userKey]) {
         instanceLastActivity[userKey] = Date.now();
     }
 };
 
-// 添加清理不活跃实例的函数
+// Add function to clean up inactive instances
 const cleanupInactiveInstances = async () => {
     const now = Date.now();
     const inactiveUserKeys = [];
@@ -111,20 +111,20 @@ const cleanupInactiveInstances = async () => {
     for (const userKey of inactiveUserKeys) {
         if (chromeInstances[userKey]) {
             try {
-                logger.info(`关闭不活跃的 Chrome 实例 (user: ${userKey})`);
+                logger.info(`Closing inactive Chrome instance (user: ${userKey})`);
                 await chromeInstances[userKey].kill();
                 delete chromeInstances[userKey];
                 delete instanceLastActivity[userKey];
             } catch (error) {
-                logger.error(`关闭不活跃实例失败 (user: ${userKey}):`, error);
+                logger.error(`Failed to close inactive instance (user: ${userKey}):`, error);
             }
         }
     }
 
-    logger.info(`当前活跃 Chrome 实例数量: ${getCurrentInstanceCount()}/${MAX_CONCURRENT_INSTANCES}`);
+    logger.info(`Current active Chrome instances: ${getCurrentInstanceCount()}/${MAX_CONCURRENT_INSTANCES}`);
 };
 
-// 定期清理不活跃的实例
+// Periodically clean up inactive instances
 setInterval(cleanupInactiveInstances, INACTIVE_CHECK_INTERVAL);
 
 const launchChromeInstance = async (chromeOptions, userKey = null) => {
@@ -132,11 +132,11 @@ const launchChromeInstance = async (chromeOptions, userKey = null) => {
     const chromeProcess = chrome.process;
     chromeProcess.on('exit', () => {
         if (userKey) {
-            logger.info(`收到 Chrome 进程 exit 信号 (user: ${userKey})，清理实例`);
+            logger.info(`Received Chrome process exit signal (user: ${userKey}), cleaning up instance`);
             delete chromeInstances[userKey];
             delete instanceLastActivity[userKey];
         } else {
-            logger.info('收到 Chrome 进程 exit 信号 (无 user)，清理实例');
+            logger.info('Received Chrome process exit signal (no user), cleaning up instance');
         }
     });
 
@@ -144,16 +144,16 @@ const launchChromeInstance = async (chromeOptions, userKey = null) => {
         instanceLastActivity[userKey] = Date.now();
     }
 
-    logger.info(`启动新的 Chrome 实例 ${userKey ? `for user: ${userKey}` : '(无 user)'}`);
-    logger.info(`当前活跃 Chrome 实例数量: ${getCurrentInstanceCount()}/${MAX_CONCURRENT_INSTANCES}`);
+    logger.info(`Launched new Chrome instance ${userKey ? `for user: ${userKey}` : '(no user)'}`);
+    logger.info(`Current active Chrome instances: ${getCurrentInstanceCount()}/${MAX_CONCURRENT_INSTANCES}`);
 
     return chrome;
 };
 
-// 创建一个 HTTP 服务器
+// Create an HTTP server
 const server = http.createServer(app);
 
-// 监听 WebSocket 请求
+// Listen for WebSocket requests
 server.on('upgrade', async (req, socket, head) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const searchParams = url.searchParams;
@@ -184,7 +184,7 @@ server.on('upgrade', async (req, socket, head) => {
 
         const defaultFlags = ['--start-maximized', '--remote-allow-origins=*'];
 
-        // 合并 launch 参数
+        // Merge launch parameters
         const finalFlags = [...defaultFlags, ...launchFlags];
 
         const chromeOptions = {
@@ -201,12 +201,12 @@ server.on('upgrade', async (req, socket, head) => {
             const userKey = launchArgs.user;
             if (chromeInstances[userKey]) {
                 chrome = chromeInstances[userKey];
-                logger.info(`复用已存在的 Chrome 实例 for user: ${userKey}`);
+                logger.info(`Reusing existing Chrome instance for user: ${userKey}`);
                 updateInstanceActivity(userKey);
             } else {
                 if (reachedMaxInstances()) {
-                    logger.error('已达到最大并发实例数量限制');
-                    socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\n已达到最大并发实例数量限制，请稍后再试');
+                    logger.error('Maximum concurrent instances limit reached');
+                    socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nMaximum concurrent instances limit reached, please try again later');
                     return;
                 }
 
@@ -216,12 +216,12 @@ server.on('upgrade', async (req, socket, head) => {
                 }
                 chromeOptions.userDataDir = userDataDir;
                 chrome = await launchChromeInstance(chromeOptions, userKey);
-                chromeInstances[userKey] = chrome; // 缓存 Chrome 实例
+                chromeInstances[userKey] = chrome; // Cache for Chrome instances
             }
         } else {
             if (reachedMaxInstances()) {
-                logger.error('已达到最大并发实例数量限制');
-                socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\n已达到最大并发实例数量限制，请稍后再试');
+                logger.error('Maximum concurrent instances limit reached');
+                socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nMaximum concurrent instances limit reached, please try again later');
                 return;
             }
             chrome = await launchChromeInstance(chromeOptions);
@@ -233,9 +233,9 @@ server.on('upgrade', async (req, socket, head) => {
         const res = await axios.get(`http://127.0.0.1:${debugPort}/json/version`);
         logger.info('Chrome launched:', res.data);
         const { webSocketDebuggerUrl } = res.data
-        // 创建一个代理服务器对象
+        // Create a proxy server object
         const cdpProxy = httpProxy.createProxyServer({
-            ws: true, // 启用 WebSocket 支持
+            ws: true, // Enable WebSocket support
         });
         cdpProxy.ws(req, socket, head, { changeOrigin: true, target: webSocketDebuggerUrl }, (err) => {
             if (err) {
@@ -243,9 +243,9 @@ server.on('upgrade', async (req, socket, head) => {
                 socket.end('HTTP/1.1 500 Internal Server Error\r\n');
             }
         });
-        // 监听代理服务器的关闭事件
+        // Listen for proxy server close event
         cdpProxy.on('close', (req, socket, head) => {
-            logger.info('WebSocket 连接已关闭');
+            logger.info('WebSocket connection closed');
             // chrome.kill(); // 注释掉 chrome.kill()
         });
     } catch (error) {
@@ -254,12 +254,12 @@ server.on('upgrade', async (req, socket, head) => {
     }
 });
 
-// 定义 GET /api/v1/browser/stop 接口
+// Define GET /api/v1/browser/stop endpoint
 app.get('/api/v1/browser/stop', async (req, res) => {
     const userId = req.query.user_id;
 
     if (!userId) {
-        return res.status(400).json({ code: -1, msg: '缺少 user_id 参数' });
+        return res.status(400).json({ code: -1, msg: 'Missing user_id parameter' });
     }
 
     if (chromeInstances[userId]) {
@@ -269,15 +269,15 @@ app.get('/api/v1/browser/stop', async (req, res) => {
             delete instanceLastActivity[userId];
             res.json({ code: 0, msg: 'success' });
         } catch (error) {
-            logger.error('关闭浏览器实例失败:', error);
-            res.status(500).json({ code: -1, msg: '关闭浏览器实例失败' });
+            logger.error('Failed to close browser instance:', error);
+            res.status(500).json({ code: -1, msg: 'Failed to close browser instance' });
         }
     } else {
-        res.status(404).json({ code: -1, msg: '未找到该 user_id 的浏览器实例' });
+        res.status(404).json({ code: -1, msg: 'Browser instance not found for this user_id' });
     }
 });
 
-// 定义 GET /api/v1/browser/list 接口
+// Define GET /api/v1/browser/list endpoint
 app.get('/api/v1/browser/list', (req, res) => {
     const userIds = Object.keys(chromeInstances);
     const now = Date.now();
@@ -306,7 +306,7 @@ app.get('/api/v1/browser/list', (req, res) => {
     });
 });
 
-// 添加 GET /api/v1/browser/stats 接口查看系统状态
+// Add GET /api/v1/browser/stats endpoint to view system status
 app.get('/api/v1/browser/stats', (req, res) => {
     res.json({
         code: 0,
@@ -321,10 +321,10 @@ app.get('/api/v1/browser/stats', (req, res) => {
     });
 });
 
-// 监听端口
+// Listen on port
 server.listen(port, '0.0.0.0', () => {
     logger.info(`Server is running on http://0.0.0.0:${port}`);
-    logger.info(`最大并发实例数: ${MAX_CONCURRENT_INSTANCES}`);
-    logger.info(`实例超时时间: ${INSTANCE_TIMEOUT_MS / 60000} 分钟`);
-    logger.info(`不活跃检查间隔: ${INACTIVE_CHECK_INTERVAL / 60000} 分钟`);
+    logger.info(`Maximum concurrent instances: ${MAX_CONCURRENT_INSTANCES}`);
+    logger.info(`Instance timeout: ${INSTANCE_TIMEOUT_MS / 60000} minutes`);
+    logger.info(`Inactive check interval: ${INACTIVE_CHECK_INTERVAL / 60000} minutes`);
 });
