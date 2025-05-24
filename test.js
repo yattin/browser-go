@@ -20,6 +20,8 @@ const token = process.env.TOKEN;
 
 const cdpUrl = `ws://127.0.0.1:3000/?startingUrl=${encodeURIComponent(startingUrl)}&token=${token}&launch=${encodeURIComponent(launchArgs)}`;
 
+console.log(cdpUrl)
+
 chromium.connectOverCDP(cdpUrl).then(async browser => {
 
     console.log('浏览器初始化完成....')

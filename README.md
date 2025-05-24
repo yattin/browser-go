@@ -69,14 +69,22 @@ node cli.js --token=my-secret-token
 
 Launch a browser instance via WebSocket connection:
 
+Two URL formats are supported:
+
+1. Query String Format:
 ```
 ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
 ```
 
+2. Path Format:
+```
+ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
+```
+
 Parameters:
 - `token`: Access token
-- `startingUrl`: URL to open after browser launch
-- `launch`: JSON format launch parameters (optional)
+- `startingUrl`: URL to open after browser launch (URL-encoded in path format)
+- `launch`: JSON format launch parameters (optional, only supported as query parameter)
   ```json
   {
     "user": "user123",  // User identifier for session persistence

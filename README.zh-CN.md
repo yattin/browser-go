@@ -69,14 +69,22 @@ node cli.js --token=my-secret-token
 
 通过 WebSocket 连接启动浏览器实例：
 
+支持两种 URL 格式：
+
+1. 查询字符串格式：
 ```
 ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
 ```
 
+2. 路径格式：
+```
+ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
+```
+
 参数说明：
 - `token`: 访问令牌
-- `startingUrl`: 浏览器启动后访问的URL
-- `launch`: JSON格式的启动参数（可选）
+- `startingUrl`: 浏览器启动后访问的URL（注意在路径格式中需要进行 URL 编码）
+- `launch`: JSON格式的启动参数（可选，仅支持作为查询参数传递）
   ```json
   {
     "user": "user123",  // 用户标识，用于会话持久化

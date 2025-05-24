@@ -153,23 +153,42 @@ const launchChromeInstance = async (chromeOptions, userKey = null) => {
 // Create an HTTP server
 const server = http.createServer(app);
 
+// Parse parameters from path URL format
+function parsePathParameters(pathname) {
+    const parts = pathname.split('/').filter(Boolean);
+    const params = {};
+
+    for (let i = 0; i < parts.length - 1; i += 2) {
+        if (parts[i] && parts[i + 1]) {
+            params[parts[i]] = decodeURIComponent(parts[i + 1]);
+        }
+    }
+
+    return params;
+}
+
 // Listen for WebSocket requests
 server.on('upgrade', async (req, socket, head) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const searchParams = url.searchParams;
+    const pathParams = parsePathParameters(url.pathname);
 
-    if (!searchParams.has('token')) {
+    // 尝试从查询字符串或路径中获取参数
+    const reqToken = searchParams.get('token') || pathParams['token'];
+    const startingUrl = searchParams.get('startingUrl') || pathParams['startingUrl'];
+
+    if (!reqToken) {
         logger.error('Missing token parameter');
         socket.end('HTTP/1.1 400 Bad Request\r\n');
         return;
     }
-    if (searchParams.get('token') !== token) {
+    if (reqToken !== token) {
         logger.error('Invalid token');
         socket.end('HTTP/1.1 403 Forbidden\r\n');
-        return
+        return;
     }
 
-    if (!searchParams.has('startingUrl')) {
+    if (!startingUrl) {
         logger.error('Missing startingUrl parameter');
         socket.end('HTTP/1.1 400 Bad Request\r\n');
         return;
@@ -188,7 +207,7 @@ server.on('upgrade', async (req, socket, head) => {
         const finalFlags = [...defaultFlags, ...launchFlags];
 
         const chromeOptions = {
-            startingUrl: url.searchParams.get('startingUrl'),
+            startingUrl: startingUrl,
             chromeFlags: finalFlags,
             logLevel: 'info',
             handleSIGINT: true
