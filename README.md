@@ -22,45 +22,61 @@ Browser-Go is a Chrome DevTools Protocol (CDP) based browser management service 
 ## Installation
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yattin/browser-go.git
 cd browser-go
 ```
 
-2. Install dependencies:
+2. Install dependencies (pnpm is specified in package.json):
+
 ```bash
-npm install
+pnpm install
+```
+
+3. Build the project:
+
+```bash
+pnpm run build
 ```
 
 ## Usage
 
 ### Starting the Service
 
+First, ensure you have built the project:
 ```bash
-node cli.js [options]
+pnpm run build
+```
+
+Then, run the compiled JavaScript file:
+```bash
+node dist/cli.js [options]
 ```
 
 ### Command Line Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--max-instances=<number>` | Maximum number of concurrent instances | 10 |
-| `--instance-timeout=<minutes>` | Instance timeout in minutes | 60 |
-| `--inactive-check-interval=<minutes>` | Interval for checking inactive instances in minutes | 5 |
-| `--token=<string>` | Access token | 'browser-go-token' |
-| `--help` | Show help information | - |
+| Option                                | Description                                         | Default            |
+| ------------------------------------- | --------------------------------------------------- | ------------------ |
+| `--max-instances=<number>`            | Maximum number of concurrent instances              | 10                 |
+| `--instance-timeout=<minutes>`        | Instance timeout in minutes                         | 60                 |
+| `--inactive-check-interval=<minutes>` | Interval for checking inactive instances in minutes | 5                  |
+| `--token=<string>`                    | Access token                                        | 'browser-go-token' |
+| `--help`                              | Show help information                               | -                  |
 
 ### Examples
 
+Ensure the project is built first (`pnpm run build`).
+
 ```bash
 # Start with default configuration
-node cli.js
+node dist/cli.js
 
 # Start with custom configuration
-node cli.js --max-instances=5 --instance-timeout=30 --inactive-check-interval=2
+node dist/cli.js --max-instances=5 --instance-timeout=30 --inactive-check-interval=2
 
 # Set custom access token
-node cli.js --token=my-secret-token
+node dist/cli.js --token=my-secret-token
 ```
 
 ## API Reference
@@ -72,23 +88,26 @@ Launch a browser instance via WebSocket connection:
 Two URL formats are supported:
 
 1. Query String Format:
+
 ```
 ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
 ```
 
 2. Path Format:
+
 ```
 ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
 ```
 
 Parameters:
+
 - `token`: Access token
 - `startingUrl`: URL to open after browser launch (URL-encoded in path format)
 - `launch`: JSON format launch parameters (optional, only supported as query parameter)
   ```json
   {
-    "user": "user123",  // User identifier for session persistence
-    "args": ["--window-size=1920,1080", "--lang=en-US"]  // Chrome launch arguments
+    "user": "user123", // User identifier for session persistence
+    "args": ["--window-size=1920,1080", "--lang=en-US"] // Chrome launch arguments
   }
   ```
 
@@ -141,11 +160,32 @@ Token used to authenticate client requests. Use a strong random value in product
 
 ```
 browser-go/
-├── cli.js          # Main entry point
-├── logger.js       # Logging module
-├── package.json    # Project configuration
-└── README.md       # Project documentation
+├── cli.ts                # Main entry point (TypeScript)
+├── logger.ts             # Logging module (TypeScript)
+├── types.ts              # TypeScript type definitions
+├── test.ts               # Test script (TypeScript)
+├── dist/                 # Compiled JavaScript output
+│   ├── cli.js
+│   ├── logger.js
+│   └── ...
+├── tsconfig.json         # TypeScript compiler configuration
+├── eslint.config.js      # ESLint configuration (flat config)
+├── .eslintrc.cjs         # ESLint legacy config (used by FlatCompat)
+├── .prettierrc.cjs       # Prettier configuration
+├── package.json          # Project configuration
+├── pnpm-lock.yaml        # PNPM lock file
+└── README.md             # Project documentation
 ```
+
+### Development Environment
+
+The project is now written in TypeScript. Key development scripts in `package.json`:
+
+- `pnpm run build`: Compiles TypeScript to JavaScript in the `dist` directory.
+- `pnpm run lint`: Lints TypeScript and JavaScript files.
+- `pnpm run lint:fix`: Lints and attempts to automatically fix issues.
+- `pnpm run start`: Starts the compiled application (after building).
+- `pnpm run test`: Runs the test script (after building).
 
 ### Dependencies
 

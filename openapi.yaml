@@ -1,0 +1,254 @@
+openapi: 3.0.3
+info:
+  title: Browser-Go API
+  description: Chrome DevTools Protocol (CDP) based browser management service with multi-user concurrent access and session management
+  version: 1.0.1
+  contact:
+    name: Browser-Go
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Development server
+paths:
+  /api/v1/browser/stop:
+    get:
+      summary: Stop browser instance
+      description: Stop a specific browser instance for a user
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          description: User identifier for the browser instance to stop
+          schema:
+            type: string
+            example: 'user123'
+      responses:
+        '200':
+          description: Browser instance stopped successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  msg:
+                    type: string
+                    example: 'success'
+        '400':
+          description: Missing user_id parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: -1
+                msg: 'Missing user_id parameter'
+        '404':
+          description: Browser instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: -1
+                msg: 'Browser instance not found for this user_id'
+        '500':
+          description: Failed to close browser instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: -1
+                msg: 'Failed to close browser instance'
+
+  /api/v1/browser/list:
+    get:
+      summary: List all browser instances
+      description: Get a list of all active browser instances with their status
+      responses:
+        '200':
+          description: List of active browser instances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  msg:
+                    type: string
+                    example: 'success'
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BrowserInstance'
+                  stats:
+                    $ref: '#/components/schemas/SystemStats'
+
+  /api/v1/browser/stats:
+    get:
+      summary: Get system statistics
+      description: Get current system status and capacity information
+      responses:
+        '200':
+          description: System statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  msg:
+                    type: string
+                    example: 'success'
+                  data:
+                    type: object
+                    properties:
+                      current_instances:
+                        type: integer
+                        description: Number of currently active instances
+                        example: 3
+                      max_instances:
+                        type: integer
+                        description: Maximum allowed concurrent instances
+                        example: 10
+                      available_slots:
+                        type: integer
+                        description: Number of available slots for new instances
+                        example: 7
+                      instance_timeout_ms:
+                        type: integer
+                        description: Instance timeout in milliseconds
+                        example: 3600000
+                      inactive_check_interval:
+                        type: integer
+                        description: Inactive instance check interval in milliseconds
+                        example: 300000
+
+components:
+  schemas:
+    BrowserInstance:
+      type: object
+      properties:
+        user_id:
+          type: string
+          description: User identifier
+          example: 'user123'
+        last_activity:
+          type: string
+          format: date-time
+          description: Last activity timestamp in ISO format
+          example: '2024-01-15T10:30:00.000Z'
+        idle_time_seconds:
+          type: integer
+          description: Idle time in seconds since last activity
+          example: 1800
+
+    SystemStats:
+      type: object
+      properties:
+        current_instances:
+          type: integer
+          description: Number of currently active instances
+          example: 3
+        max_instances:
+          type: integer
+          description: Maximum allowed concurrent instances
+          example: 10
+        instance_timeout_ms:
+          type: integer
+          description: Instance timeout in milliseconds
+          example: 3600000
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: Error code (-1 for errors, 0 for success)
+          example: -1
+        msg:
+          type: string
+          description: Error message
+          example: 'Error description'
+
+    LaunchParameters:
+      type: object
+      description: Parameters for launching a browser instance via WebSocket
+      properties:
+        user:
+          type: string
+          description: User identifier for session persistence
+          example: 'user123'
+        args:
+          type: array
+          items:
+            type: string
+          description: Chrome launch arguments
+          example: ['--window-size=1920,1080', '--lang=en-US']
+
+  securitySchemes:
+    TokenAuth:
+      type: apiKey
+      in: query
+      name: token
+      description: Access token for authentication
+
+# WebSocket endpoint documentation (not part of OpenAPI 3.0 spec but documented here)
+x-websocket-endpoints:
+  browser-launch:
+    summary: Launch browser instance via WebSocket
+    description: |
+      Launch a browser instance and establish a WebSocket connection to Chrome DevTools Protocol.
+
+      Two URL formats are supported:
+
+      1. Query String Format:
+         ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
+
+      2. Path Format:
+         ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
+
+    parameters:
+      - name: token
+        required: true
+        description: Access token for authentication
+        schema:
+          type: string
+          example: 'browser-go-token'
+
+      - name: startingUrl
+        required: true
+        description: URL to open after browser launch (URL-encoded in path format)
+        schema:
+          type: string
+          format: uri
+          example: 'https://www.example.com'
+
+      - name: launch
+        required: false
+        description: JSON format launch parameters
+        schema:
+          $ref: '#/components/schemas/LaunchParameters'
+
+    responses:
+      101:
+        description: WebSocket connection established successfully
+      400:
+        description: Missing required parameters (token or startingUrl)
+      403:
+        description: Invalid token
+      503:
+        description: Maximum concurrent instances limit reached
+      500:
+        description: Failed to launch Chrome instance
+
+security:
+  - TokenAuth: []
