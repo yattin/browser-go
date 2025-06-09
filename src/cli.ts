@@ -21,6 +21,7 @@ import {
   StatsBrowserResponse,
   SystemStatsData,
 } from './types.js';
+import { getAsset, isSea } from 'node:sea'
 
 // 显示帮助信息
 function showHelp(): void {
@@ -88,8 +89,9 @@ const port: number = 3000;
 // 加载 OpenAPI 规范，使用简单的 JSON 方式
 let openApiSpec: any;
 try {
-  const yamlContent = fs.readFileSync('./openapi.yaml', 'utf8');
-  // 简单的 YAML 解析，仅支持基本格式
+  // 如果是 Sea 环境，尝试从资源中获取 openapi.yaml
+  // 否则从本地文件系统读取
+  const yamlContent = isSea() ? getAsset('openapi.yaml', 'utf8') : fs.readFileSync('./openapi.yaml', 'utf8');
   openApiSpec = parseSimpleYaml(yamlContent);
 } catch (error) {
   // 如果加载失败，记录警告并提示只显示空白接口文档
@@ -111,23 +113,23 @@ function parseSimpleYaml(content: string): any {
     let currentPath: any = result;
     let indentStack: any[] = [result];
     let indentLevels: number[] = [0];
-    
+
     for (const line of lines) {
       if (line.trim() === '' || line.trim().startsWith('#')) continue;
-      
+
       const match = line.match(/^(\s*)([^:]+):\s*(.*)$/);
       if (match) {
         const [, indent, key, value] = match;
         const indentLevel = indent.length;
-        
+
         // 调整缩进栈
         while (indentLevels.length > 1 && indentLevel <= indentLevels[indentLevels.length - 1]) {
           indentLevels.pop();
           indentStack.pop();
         }
-        
+
         currentPath = indentStack[indentStack.length - 1];
-        
+
         if (value.trim() === '') {
           // 这是一个对象
           currentPath[key.trim()] = {};
@@ -143,12 +145,12 @@ function parseSimpleYaml(content: string): any {
           else if (parsedValue.startsWith('"') && parsedValue.endsWith('"')) {
             parsedValue = parsedValue.slice(1, -1);
           }
-          
+
           currentPath[key.trim()] = parsedValue;
         }
       }
     }
-    
+
     return result;
   } catch (error) {
     logger.error('Simple YAML parsing failed:', error);

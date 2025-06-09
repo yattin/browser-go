@@ -1,6 +1,6 @@
 {
   "main": "dist-vite/browser-go.cjs",
-  "output": "sea-prep.blob",
+  "output": "binary/sea-prep.blob",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
   "useCodeCache": true,
