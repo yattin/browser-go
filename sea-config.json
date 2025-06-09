@@ -1,0 +1,10 @@
+{
+  "main": "dist-vite/browser-go.cjs",
+  "output": "sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": true,
+  "assets": {
+    "openapi.yaml": "openapi.yaml"
+  }
+}
