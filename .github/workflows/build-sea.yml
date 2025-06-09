@@ -8,6 +8,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -29,31 +32,36 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
         cache: 'pnpm'
 
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v4
-      with:
-        version: latest
+    - name: Verify pnpm installation
+      run: |
+        echo "pnpm version:"
+        pnpm --version
+        echo "Node.js version:"
+        node --version
+        echo "npm version:"
+        npm --version
 
     - name: Install dependencies
       run: pnpm install
 
     - name: Create binary directory
-      run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          mkdir binary 2>nul || true
-        else
-          mkdir -p binary
-        fi
+      run: mkdir -p binary
       shell: bash
 
     - name: Build SEA executable
       run: pnpm run build:sea:${{ matrix.target }}
+      env:
+        NODE_ENV: production
+        CI: true
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -66,6 +74,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     
     steps:
     - name: Checkout code
