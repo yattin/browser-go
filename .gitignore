@@ -4,6 +4,8 @@ build/
 metrics.json
 extensions/ublocklite
 dist/
+dist-vite/
+binary/
 
 # MAC
 .DS_Store
@@ -24,3 +26,4 @@ test-*.png
 *.tgz
 
 .vscode
+

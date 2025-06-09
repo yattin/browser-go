@@ -22,12 +22,14 @@ Browser-Go 是一个基于 Chrome DevTools Protocol (CDP) 的浏览器管理服�
 ## 安装
 
 1. 克隆仓库：
+
 ```bash
 git clone https://github.com/yattin/browser-go.git
 cd browser-go
 ```
 
 2. 安装依赖：
+
 ```bash
 npm install
 ```
@@ -42,13 +44,13 @@ node cli.js [选项]
 
 ### 命令行选项
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `--max-instances=<number>` | 最大并发实例数 | 10 |
-| `--instance-timeout=<minutes>` | 实例超时时间（分钟） | 60 |
-| `--inactive-check-interval=<minutes>` | 检查不活跃实例的间隔（分钟） | 5 |
-| `--token=<string>` | 访问令牌 | 'browser-go-token' |
-| `--help` | 显示帮助信息 | - |
+| 选项                                  | 说明                         | 默认值             |
+| ------------------------------------- | ---------------------------- | ------------------ |
+| `--max-instances=<number>`            | 最大并发实例数               | 10                 |
+| `--instance-timeout=<minutes>`        | 实例超时时间（分钟）         | 60                 |
+| `--inactive-check-interval=<minutes>` | 检查不活跃实例的间隔（分钟） | 5                  |
+| `--token=<string>`                    | 访问令牌                     | 'browser-go-token' |
+| `--help`                              | 显示帮助信息                 | -                  |
 
 ### 示例
 
@@ -72,23 +74,26 @@ node cli.js --token=my-secret-token
 支持两种 URL 格式：
 
 1. 查询字符串格式：
+
 ```
 ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
 ```
 
 2. 路径格式：
+
 ```
 ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
 ```
 
 参数说明：
+
 - `token`: 访问令牌
 - `startingUrl`: 浏览器启动后访问的URL（注意在路径格式中需要进行 URL 编码）
 - `launch`: JSON格式的启动参数（可选，仅支持作为查询参数传递）
   ```json
   {
-    "user": "user123",  // 用户标识，用于会话持久化
-    "args": ["--window-size=1920,1080", "--lang=en-US"]  // Chrome启动参数
+    "user": "user123", // 用户标识，用于会话持久化
+    "args": ["--window-size=1920,1080", "--lang=en-US"] // Chrome启动参数
   }
   ```
 
@@ -156,4 +161,4 @@ browser-go/
 
 ## 许可证
 
-MIT License 
+MIT License

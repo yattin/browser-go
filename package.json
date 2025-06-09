@@ -1,13 +1,29 @@
 {
   "name": "browser-go",
-  "version": "1.0.1",
-  "main": "cli.js",
+  "version": "1.0.2",
+  "main": "dist/cli.js",
   "bin": {
-    "browser-go": "cli.js"
+    "browser-go": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "start": "node cli.js",
-    "test": "node test.js"
+    "start": "node dist/cli.js",
+    "test": "node dist/test.js",
+    "build": "tsc",
+    "build:vite": "vite build",
+    "build:bundle:x": "vite build && chmod +x dist-vite/browser-go.cjs",
+    "build:bundle": "vite build",
+    "build:binary:macos": "pnpm run build:bundle && pkg dist-vite/browser-go.cjs --target node18-macos-x64 --output binary/browser-go-macos",
+    "build:binary:windows": "pnpm run build:bundle && pkg dist-vite/browser-go.cjs --target node18-win-x64 --output binary/browser-go-windows.exe",
+    "build:binary:all": "pnpm run build:bundle && pkg dist-vite/browser-go.cjs --config pkg.json",
+    "build:sea:prep": "pnpm run build:bundle && node --experimental-sea-config sea-config.json",
+    "build:sea:macos": "pnpm run build:sea:prep && cp $(node -e \"console.log(process.execPath)\") binary/browser-go-sea-macos && npx postject binary/browser-go-sea-macos NODE_SEA_BLOB sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --macho-segment-name NODE_SEA && codesign --force --deep --sign - binary/browser-go-sea-macos",
+    "build:sea:windows": "pnpm run build:sea:prep && node -e \"require('fs').copyFileSync(process.execPath, 'binary/browser-go-sea-windows.exe')\" && npx postject binary/browser-go-sea-windows.exe NODE_SEA_BLOB sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    "build:sea:linux": "pnpm run build:sea:prep && node -e \"require('fs').copyFileSync(process.execPath, 'binary/browser-go-sea-linux')\" && npx postject binary/browser-go-sea-linux NODE_SEA_BLOB sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    "lint": "eslint . --ext .ts,.js",
+    "lint:fix": "eslint . --ext .ts,.js --fix"
   },
   "keywords": [],
   "author": "",
@@ -21,10 +37,39 @@
     "express": "^4.18.2",
     "http-proxy": "^1.18.1",
     "patchright": "^1.50.1",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.0",
     "uuid": "^11.1.0",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0",
-    "ws": "^8.18.1"
+    "ws": "^8.18.1",
+    "yamljs": "^0.3.0"
   },
-  "packageManager": "pnpm@10.7.1+sha512.2d92c86b7928dc8284f53494fb4201f983da65f0fb4f0d40baafa5cf628fa31dae3e5968f12466f17df7e97310e30f343a648baea1b9b350685dafafffdf5808"
+  "packageManager": "pnpm@10.7.1+sha512.2d92c86b7928dc8284f53494fb4201f983da65f0fb4f0d40baafa5cf628fa31dae3e5968f12466f17df7e97310e30f343a648baea1b9b350685dafafffdf5808",
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@eslint/js": "^9.28.0",
+    "@types/dotenv": "^8.2.3",
+    "@types/express": "^5.0.2",
+    "@types/http-proxy": "^1.17.16",
+    "@types/node": "^22.15.29",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "@types/yamljs": "^0.2.34",
+    "@typescript-eslint/eslint-plugin": "^8.33.1",
+    "@typescript-eslint/parser": "^8.33.1",
+    "eslint": "^9.28.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-prettier": "^5.4.1",
+    "pkg": "^5.8.1",
+    "postject": "1.0.0-alpha.6",
+    "prettier": "^3.5.3",
+    "terser": "^5.41.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.1",
+    "vite": "^6.3.5",
+    "vite-plugin-node": "^5.0.1"
+  }
 }
