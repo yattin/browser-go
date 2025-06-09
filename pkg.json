@@ -1,0 +1,23 @@
+{
+  "name": "browser-go",
+  "version": "1.0.2",
+  "main": "dist-vite/browser-go.cjs",
+  "bin": "dist-vite/browser-go.cjs",
+  "pkg": {
+    "targets": [
+      "node18-macos-x64",
+      "node18-linux-x64",
+      "node18-win-x64"
+    ],
+    "outputPath": "binary",
+    "outputFiles": {
+      "node18-macos-x64": "browser-go-macos",
+      "node18-linux-x64": "browser-go-linux", 
+      "node18-win-x64": "browser-go-windows.exe"
+    },
+    "assets": [
+      "dist/openapi.yaml",
+      "openapi.yaml"
+    ]
+  }
+}

@@ -9,7 +9,6 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import swaggerUi from 'swagger-ui-express';
-import YAML from 'yamljs';
 import { logger } from './logger.js';
 import { Duplex } from 'stream';
 import {
@@ -86,7 +85,80 @@ const port: number = 3000;
 
 // Load OpenAPI specification
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const openApiSpec: any = YAML.load('./openapi.yaml');
+// 加载 OpenAPI 规范，使用简单的 JSON 方式
+let openApiSpec: any;
+try {
+  const yamlContent = fs.readFileSync('./openapi.yaml', 'utf8');
+  // 简单的 YAML 解析，仅支持基本格式
+  openApiSpec = parseSimpleYaml(yamlContent);
+} catch (error) {
+  // 如果加载失败，记录警告并提示只显示空白接口文档
+  logger.warn('Failed to load OpenAPI specification from openapi.yaml, using default empty spec.')
+  openApiSpec = {
+    openapi: '3.0.0',
+    info: { title: 'Browser-Go API', version: '1.0.0' },
+    paths: {}
+  };
+}
+
+// 简单的 YAML 解析函数
+function parseSimpleYaml(content: string): any {
+  // 这是一个非常简化的 YAML 解析器，仅用于基本的 OpenAPI 文件
+  // 在生产环境中应该使用更完整的 YAML 解析库
+  try {
+    const lines = content.split('\n');
+    const result: any = {};
+    let currentPath: any = result;
+    let indentStack: any[] = [result];
+    let indentLevels: number[] = [0];
+    
+    for (const line of lines) {
+      if (line.trim() === '' || line.trim().startsWith('#')) continue;
+      
+      const match = line.match(/^(\s*)([^:]+):\s*(.*)$/);
+      if (match) {
+        const [, indent, key, value] = match;
+        const indentLevel = indent.length;
+        
+        // 调整缩进栈
+        while (indentLevels.length > 1 && indentLevel <= indentLevels[indentLevels.length - 1]) {
+          indentLevels.pop();
+          indentStack.pop();
+        }
+        
+        currentPath = indentStack[indentStack.length - 1];
+        
+        if (value.trim() === '') {
+          // 这是一个对象
+          currentPath[key.trim()] = {};
+          indentStack.push(currentPath[key.trim()]);
+          indentLevels.push(indentLevel);
+        } else {
+          // 这是一个值
+          let parsedValue: any = value.trim();
+          if (parsedValue === 'true') parsedValue = true;
+          else if (parsedValue === 'false') parsedValue = false;
+          else if (/^\d+$/.test(parsedValue)) parsedValue = parseInt(parsedValue);
+          else if (/^\d+\.\d+$/.test(parsedValue)) parsedValue = parseFloat(parsedValue);
+          else if (parsedValue.startsWith('"') && parsedValue.endsWith('"')) {
+            parsedValue = parsedValue.slice(1, -1);
+          }
+          
+          currentPath[key.trim()] = parsedValue;
+        }
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    logger.error('Simple YAML parsing failed:', error);
+    return {
+      openapi: '3.0.0',
+      info: { title: 'Browser-Go API', version: '1.0.0' },
+      paths: {}
+    };
+  }
+}
 
 // Setup Swagger UI
 app.use(
@@ -480,8 +552,8 @@ app.get('/api/v1/browser/stats', (req: Request, res: Response) => {
 // Listen on port
 server.listen(port, '0.0.0.0', () => {
   logger.info(`Server is running on http://0.0.0.0:${port}`);
-  logger.info(`API Documentation available at http://0.0.0.0:${port}/api-docs`);
-  logger.info(`OpenAPI spec available at http://0.0.0.0:${port}/openapi.json`);
+  logger.info(`API Documentation available at http://127.0.0.1:${port}/api-docs`);
+  logger.info(`OpenAPI spec available at http://127.0.0.1:${port}/openapi.json`);
   logger.info(`Maximum concurrent instances: ${MAX_CONCURRENT_INSTANCES}`);
   logger.info(`Instance timeout: ${INSTANCE_TIMEOUT_MS / 60000} minutes`);
   logger.info(
