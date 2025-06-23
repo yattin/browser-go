@@ -12,6 +12,7 @@ import swaggerUi from 'swagger-ui-express';
 import { logger } from './logger.js';
 import { getAppConfig } from './config.js';
 import { loadOpenApiSpec } from './openapi.js';
+import { DeviceManager } from './device-manager.js';
 import { CDPRelayBridge } from './cdp-bridge.js';
 import { ChromeManager } from './chrome-manager.js';
 import { WebSocketHandlers } from './websocket-handlers.js';
@@ -46,9 +47,10 @@ app.get('/openapi.json', (_req, res) => {
 
 // Initialize core components
 const chromeManager = new ChromeManager(config);
-const cdpRelayBridge = new CDPRelayBridge();
-const webSocketHandlers = new WebSocketHandlers(cdpRelayBridge, chromeManager, config.token);
-const apiRoutes = new ApiRoutes(chromeManager);
+const deviceManager = new DeviceManager();
+const cdpRelayBridge = new CDPRelayBridge(deviceManager);
+const webSocketHandlers = new WebSocketHandlers(cdpRelayBridge, chromeManager, deviceManager, config.token);
+const apiRoutes = new ApiRoutes(chromeManager, deviceManager);
 
 // Setup API routes
 apiRoutes.setupRoutes(app);
@@ -79,6 +81,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     
     // Shutdown Chrome manager
     await chromeManager.shutdown();
+    
+    // Shutdown Device manager
+    deviceManager.shutdown();
     
     logger.info('Graceful shutdown completed');
     process.exit(0);

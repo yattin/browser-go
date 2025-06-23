@@ -16,16 +16,19 @@ import chromeLauncher from 'chrome-launcher';
 import { logger } from './logger.js';
 import { CDPRelayBridge } from './cdp-bridge.js';
 import { ChromeManager } from './chrome-manager.js';
+import { DeviceManager } from './device-manager.js';
 import { LaunchParameters } from './types.js';
 
 export class WebSocketHandlers {
   private cdpRelayBridge: CDPRelayBridge;
   private chromeManager: ChromeManager;
+  private deviceManager: DeviceManager;
   private token: string;
 
-  constructor(cdpRelayBridge: CDPRelayBridge, chromeManager: ChromeManager, token: string) {
+  constructor(cdpRelayBridge: CDPRelayBridge, chromeManager: ChromeManager, deviceManager: DeviceManager, token: string) {
     this.cdpRelayBridge = cdpRelayBridge;
     this.chromeManager = chromeManager;
+    this.deviceManager = deviceManager;
     this.token = token;
   }
 
@@ -51,14 +54,19 @@ export class WebSocketHandlers {
   async handleCDPConnection(
     req: IncomingMessage, 
     socket: Duplex, 
-    head: Buffer
+    head: Buffer,
+    deviceId?: string | null
   ): Promise<void> {
     try {
-      logger.info('CDP connection attempt');
+      if (deviceId) {
+        logger.info(`CDP connection attempt for device: ${deviceId}`);
+      } else {
+        logger.info('CDP connection attempt (no device routing)');
+      }
 
       const wss = new WebSocketServer({ noServer: true });
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-        this.cdpRelayBridge.handleCDPConnection(ws);
+        this.cdpRelayBridge.handleCDPConnection(ws, deviceId || undefined);
       });
 
     } catch (error) {
@@ -270,7 +278,8 @@ export class WebSocketHandlers {
 
     // Check if this is a CDP relay connection
     if (url.pathname === '/cdp') {
-      await this.handleCDPConnection(req, socket, head);
+      const deviceId = searchParams.get('deviceId');
+      await this.handleCDPConnection(req, socket, head, deviceId);
       return;
     }
 

@@ -6,6 +6,7 @@
 import { Request, Response, Application } from 'express';
 import { logger } from './logger.js';
 import { ChromeManager } from './chrome-manager.js';
+import { DeviceManager } from './device-manager.js';
 import { 
   StopBrowserResponse, 
   ListBrowserResponse, 
@@ -17,9 +18,11 @@ import {
 
 export class ApiRoutes {
   private chromeManager: ChromeManager;
+  private deviceManager: DeviceManager;
 
-  constructor(chromeManager: ChromeManager) {
+  constructor(chromeManager: ChromeManager, deviceManager: DeviceManager) {
     this.chromeManager = chromeManager;
+    this.deviceManager = deviceManager;
   }
 
   /**
@@ -29,6 +32,7 @@ export class ApiRoutes {
     this.setupStopRoute(app);
     this.setupListRoute(app);
     this.setupStatsRoute(app);
+    this.setupDeviceRoutes(app);
   }
 
   /**
@@ -145,6 +149,101 @@ export class ApiRoutes {
         data: statsData,
       };
       res.json(response);
+    });
+  }
+
+  /**
+   * Setup device management routes
+   */
+  private setupDeviceRoutes(app: Application): void {
+    // GET /api/v1/devices - List all registered devices
+    app.get('/api/v1/devices', (req: Request, res: Response) => {
+      try {
+        const devices = this.deviceManager.getAllDevices();
+        const deviceStats = this.deviceManager.getDeviceStats();
+        
+        const deviceList = devices.map(device => ({
+          deviceId: device.deviceId,
+          deviceInfo: device.deviceInfo,
+          connectionInfo: device.connectionInfo,
+          registeredAt: device.registeredAt,
+          lastSeen: device.lastSeen,
+          isConnected: device.extensionSocket.readyState === 1 // WebSocket.OPEN
+        }));
+
+        res.json({
+          code: 0,
+          msg: 'success',
+          data: {
+            devices: deviceList,
+            stats: deviceStats
+          }
+        });
+      } catch (error: any) {
+        logger.error('Error listing devices:', error);
+        res.status(500).json({
+          code: -1,
+          msg: 'Internal server error',
+          data: null
+        });
+      }
+    });
+
+    // GET /api/v1/devices/:deviceId - Get specific device info
+    app.get('/api/v1/devices/:deviceId', (req: Request, res: Response) => {
+      try {
+        const deviceId = req.params.deviceId;
+        const device = this.deviceManager.getDevice(deviceId);
+        
+        if (!device) {
+          res.status(404).json({
+            code: 404,
+            msg: 'Device not found',
+            data: null
+          });
+          return;
+        }
+
+        res.json({
+          code: 0,
+          msg: 'success',
+          data: {
+            deviceId: device.deviceId,
+            deviceInfo: device.deviceInfo,
+            connectionInfo: device.connectionInfo,
+            registeredAt: device.registeredAt,
+            lastSeen: device.lastSeen,
+            isConnected: device.extensionSocket.readyState === 1
+          }
+        });
+      } catch (error: any) {
+        logger.error('Error getting device info:', error);
+        res.status(500).json({
+          code: -1,
+          msg: 'Internal server error',
+          data: null
+        });
+      }
+    });
+
+    // GET /api/v1/device/stats - Get device statistics
+    app.get('/api/v1/device/stats', (req: Request, res: Response) => {
+      try {
+        const stats = this.deviceManager.getDeviceStats();
+        
+        res.json({
+          code: 0,
+          msg: 'success',
+          data: stats
+        });
+      } catch (error: any) {
+        logger.error('Error getting device stats:', error);
+        res.status(500).json({
+          code: -1,
+          msg: 'Internal server error',
+          data: null
+        });
+      }
     });
   }
 }

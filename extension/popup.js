@@ -27,6 +27,7 @@ class PopupController {
     this.connectBtn = /** @type {HTMLButtonElement} */ (document.getElementById('connect-btn'));
     this.statusContainer = /** @type {HTMLElement} */ (document.getElementById('status-container'));
     this.actionContainer = /** @type {HTMLElement} */ (document.getElementById('action-container'));
+    this.deviceIdElement = /** @type {HTMLElement} */ (document.getElementById('device-id'));
 
     this.init();
   }
@@ -45,6 +46,11 @@ class PopupController {
     // Set up event listeners
     this.bridgeUrlInput.addEventListener('input', this.onUrlChange.bind(this));
     this.connectBtn.addEventListener('click', this.onConnectClick.bind(this));
+    
+    // Set up device ID click to copy
+    if (this.deviceIdElement) {
+      this.deviceIdElement.addEventListener('click', this.onDeviceIdClick.bind(this));
+    }
 
     // Update UI based on current state
     await this.updateUI();
@@ -59,7 +65,21 @@ class PopupController {
       tabId: this.currentTab.id
     });
 
-    const { isConnected, activeTabId, activeTabInfo, error } = response;
+    const { isConnected, activeTabId, activeTabInfo, error, deviceId } = response;
+
+    // Update device ID display
+    if (this.deviceIdElement) {
+      if (deviceId && deviceId !== 'device-error') {
+        this.deviceIdElement.textContent = deviceId;
+      } else if (deviceId === 'device-error') {
+        this.deviceIdElement.textContent = 'Error loading device ID';
+        this.deviceIdElement.style.color = '#c62828';
+      } else {
+        this.deviceIdElement.textContent = 'Loading...';
+        // Retry getting status after a short delay
+        setTimeout(() => this.updateUI(), 1000);
+      }
+    }
 
     if (!this.statusContainer || !this.actionContainer) return;
 
@@ -218,6 +238,44 @@ class PopupController {
       return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
     } catch {
       return false;
+    }
+  }
+
+  async onDeviceIdClick() {
+    if (!this.deviceIdElement) return;
+    
+    const deviceId = this.deviceIdElement.textContent;
+    if (!deviceId || deviceId === 'Loading...') return;
+
+    try {
+      await navigator.clipboard.writeText(deviceId);
+      
+      // Show feedback
+      const originalText = this.deviceIdElement.textContent;
+      this.deviceIdElement.textContent = 'Copied!';
+      this.deviceIdElement.style.background = '#e8f5e8';
+      this.deviceIdElement.style.color = '#2e7d32';
+      
+      setTimeout(() => {
+        this.deviceIdElement.textContent = originalText;
+        this.deviceIdElement.style.background = '#f9f9f9';
+        this.deviceIdElement.style.color = '#333';
+      }, 1500);
+    } catch (error) {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = deviceId;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      
+      // Show feedback
+      const originalText = this.deviceIdElement.textContent;
+      this.deviceIdElement.textContent = 'Copied!';
+      setTimeout(() => {
+        this.deviceIdElement.textContent = originalText;
+      }, 1500);
     }
   }
 }

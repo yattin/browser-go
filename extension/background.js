@@ -21,7 +21,7 @@
 // @ts-check
 
 function debugLog(...args) {
-  const enabled = false;
+  const enabled = true; // Enable for device ID debugging
   if (enabled) {
     console.log('[Extension]', ...args);
   }
@@ -32,6 +32,8 @@ class TabShareExtension {
     this.activeConnections = new Map(); // tabId -> connection info
     this.autoConnectEnabled = true; // Enable auto-connect for testing
     this.defaultBridgeUrl = 'ws://localhost:3000/extension'; // Default bridge URL
+    this.deviceId = null; // Will be initialized from storage
+    this.isAttached = false; // Track debugger attachment status
 
     // Remove page action click handler since we now use popup
     chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
@@ -39,10 +41,56 @@ class TabShareExtension {
     // Handle messages from popup
     chrome.runtime.onMessage.addListener(this.onMessage.bind(this));
 
-    // Auto-connect to active tab if enabled
-    if (this.autoConnectEnabled) {
-      this.initAutoConnect();
+    // Initialize device ID and auto-connect
+    this.initDevice().then(() => {
+      if (this.autoConnectEnabled) {
+        this.initAutoConnect();
+      }
+    });
+  }
+
+  /**
+   * Initialize device ID - generate UUID if not exists
+   */
+  async initDevice() {
+    try {
+      debugLog('Initializing device ID...');
+      // Try to get existing device ID from storage
+      const result = await chrome.storage.local.get(['deviceId']);
+      
+      if (result.deviceId) {
+        this.deviceId = result.deviceId;
+        debugLog('Loaded existing device ID:', this.deviceId);
+      } else {
+        // Generate new device ID
+        this.deviceId = `device-${this.generateUUID()}`;
+        await chrome.storage.local.set({ deviceId: this.deviceId });
+        debugLog('Generated new device ID:', this.deviceId);
+      }
+    } catch (error) {
+      debugLog('Error initializing device ID:', error.message);
+      // Fallback to session-based ID
+      this.deviceId = `device-session-${Date.now()}`;
+      debugLog('Using fallback device ID:', this.deviceId);
     }
+  }
+
+  /**
+   * Generate UUID v4
+   */
+  generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  /**
+   * Get device ID
+   */
+  getDeviceId() {
+    return this.deviceId;
   }
 
   /**
@@ -74,7 +122,14 @@ class TabShareExtension {
   onMessage(message, sender, sendResponse) {
     switch (message.type) {
       case 'getStatus':
-        this.getStatus(message.tabId, sendResponse);
+        this.getStatus(message.tabId, sendResponse).catch((error) => {
+          debugLog('Error in getStatus:', error);
+          sendResponse({
+            isConnected: false,
+            deviceId: this.deviceId || 'device-error',
+            error: 'Failed to get status'
+          });
+        });
         return true; // Will respond asynchronously
 
       case 'connect':
@@ -99,7 +154,16 @@ class TabShareExtension {
    * @param {number} requestedTabId
    * @param {Function} sendResponse
    */
-  getStatus(requestedTabId, sendResponse) {
+  async getStatus(requestedTabId, sendResponse) {
+    // Ensure device ID is initialized before responding
+    if (!this.deviceId) {
+      try {
+        await this.initDevice();
+      } catch (error) {
+        debugLog('Error initializing device ID for status:', error);
+      }
+    }
+
     const isConnected = this.activeConnections.size > 0;
     let activeTabId = null;
     let activeTabInfo = null;
@@ -113,11 +177,13 @@ class TabShareExtension {
         if (chrome.runtime.lastError) {
           sendResponse({
             isConnected: false,
+            deviceId: this.deviceId,
             error: 'Active tab not found'
           });
         } else {
           sendResponse({
             isConnected: true,
+            deviceId: this.deviceId,
             activeTabId,
             activeTabInfo: {
               title: tab.title,
@@ -129,6 +195,7 @@ class TabShareExtension {
     } else {
       sendResponse({
         isConnected: false,
+        deviceId: this.deviceId,
         activeTabId: null,
         activeTabInfo: null
       });
@@ -144,14 +211,22 @@ class TabShareExtension {
     try {
       debugLog(`Connecting tab ${tabId} to bridge at ${bridgeUrl}`);
 
-      // Attach chrome debugger
+      // Prepare debuggee but don't attach yet (lazy attach)
       const debuggee = { tabId };
-      await chrome.debugger.attach(debuggee, '1.3');
-
-      if (chrome.runtime.lastError)
-        throw new Error(chrome.runtime.lastError.message);
-      const targetInfo = /** @type {any} */ (await chrome.debugger.sendCommand(debuggee, 'Target.getTargetInfo'));
-      debugLog('Target info:', targetInfo);
+      
+      // Get tab info without attaching debugger
+      const tab = await chrome.tabs.get(tabId);
+      const targetInfo = {
+        targetInfo: {
+          targetId: `tab-${tabId}`,
+          type: 'page',
+          title: tab.title,
+          url: tab.url,
+          attached: false, // Will be true after lazy attach
+          canAccessOpener: false,
+          browserContextId: `context-${tabId}`
+        }
+      };
 
       // Connect to bridge server
       const socket = new WebSocket(bridgeUrl);
@@ -166,12 +241,27 @@ class TabShareExtension {
       await new Promise((resolve, reject) => {
         socket.onopen = () => {
           debugLog(`WebSocket connected for tab ${tabId}`);
-          // Send initial connection info to bridge
+          
+          // First send device registration
+          socket.send(JSON.stringify({
+            type: 'device_register',
+            deviceId: this.deviceId,
+            deviceInfo: {
+              name: 'Chrome Extension Device',
+              version: '1.0.0',
+              userAgent: navigator.userAgent,
+              timestamp: new Date().toISOString()
+            }
+          }));
+          
+          // Then send connection info to bridge
           socket.send(JSON.stringify({
             type: 'connection_info',
+            deviceId: this.deviceId,
             sessionId: connection.sessionId,
             targetInfo: targetInfo?.targetInfo
           }));
+          
           resolve(undefined);
         };
         socket.onerror = reject;
@@ -229,6 +319,28 @@ class TabShareExtension {
 
       try {
         debugLog('Received from bridge:', message);
+
+        // Lazy attach: only attach debugger when receiving actual CDP commands
+        if (message.method && !this.isAttached) {
+          debugLog('Lazy attaching debugger for first CDP command');
+          try {
+            await chrome.debugger.attach(debuggee, '1.3');
+            this.isAttached = true;
+            debugLog('Debugger attached successfully');
+          } catch (attachError) {
+            debugLog('Failed to attach debugger:', attachError);
+            const response = {
+              id: message.id,
+              sessionId: message.sessionId,
+              error: {
+                code: -32000,
+                message: `Failed to attach debugger: ${attachError.message}`,
+              },
+            };
+            socket.send(JSON.stringify(response));
+            return;
+          }
+        }
 
         const debuggerSession = { ...debuggee };
         const sessionId = message.sessionId;
@@ -347,11 +459,15 @@ class TabShareExtension {
       connection.socket.close();
     }
 
-    // Detach debugger
-    try {
-      await chrome.debugger.detach(connection.debuggee);
-    } catch (error) {
-      // Ignore detach errors - might already be detached
+    // Detach debugger if attached
+    if (this.isAttached) {
+      try {
+        await chrome.debugger.detach(connection.debuggee);
+      } catch (error) {
+        // Ignore detach errors - might already be detached
+        debugLog('Detach error (ignored):', error);
+      }
+      this.isAttached = false;
     }
 
     this.activeConnections.delete(tabId);

@@ -15,12 +15,49 @@ import path from 'path';
 
 dotenv.config();
 
-const cdpUrl: string = `ws://127.0.0.1:3000/cdp`;
 const extensionPath = path.resolve('./extension');
 
 console.log('🔗 Extension Path:', extensionPath);
-console.log('🔗 CDP URL:', cdpUrl);
-console.log('📝 This test will launch Chrome with extension loaded and test bridge functionality');
+console.log('📝 This test will launch Chrome with extension loaded and test device-based bridge functionality');
+
+/**
+ * Get device list from server
+ */
+async function getRegisteredDevices(): Promise<any[]> {
+  try {
+    const response = await fetch('http://127.0.0.1:3000/api/v1/devices');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const data = await response.json();
+    return data.data?.devices || [];
+  } catch (error: any) {
+    console.log('Note: Device API not available:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Wait for device to register and return its ID
+ */
+async function waitForDeviceRegistration(timeoutMs: number = 10000): Promise<string | null> {
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeoutMs) {
+    const devices = await getRegisteredDevices();
+    
+    if (devices.length > 0) {
+      const device = devices[0]; // Use first available device
+      console.log(`🔗 Found registered device: ${device.deviceId}`);
+      return device.deviceId;
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  console.log('⚠️  No device registered within timeout, using fallback approach');
+  return null;
+}
 
 async function runExtensionBridgeTest() {
   let chrome: any = null;
@@ -56,8 +93,21 @@ async function runExtensionBridgeTest() {
     console.log(`✅ Chrome launched with CDP on port ${chrome.port}`);
     console.log('🔌 Extension should auto-connect to /extension endpoint in 2 seconds...');
     
-    // Wait for extension to auto-connect
+    // Wait for extension to auto-connect and register device
     await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Wait for device registration
+    console.log('\n🔍 Waiting for device registration...');
+    const deviceId = await waitForDeviceRegistration(15000);
+    
+    let cdpUrl: string;
+    if (deviceId) {
+      cdpUrl = `ws://127.0.0.1:3000/cdp?deviceId=${deviceId}`;
+      console.log(`🔗 Using device-routed CDP URL: ${cdpUrl}`);
+    } else {
+      cdpUrl = `ws://127.0.0.1:3000/cdp`;
+      console.log(`🔗 Using fallback CDP URL (no device routing): ${cdpUrl}`);
+    }
     
     // Connect to our CDP bridge endpoint
     console.log('\n🔗 Connecting to CDP bridge endpoint...');
