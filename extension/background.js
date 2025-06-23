@@ -34,6 +34,7 @@ class TabShareExtension {
     this.defaultBridgeUrl = 'ws://localhost:3000/extension'; // Default bridge URL
     this.deviceId = null; // Will be initialized from storage
     this.isAttached = false; // Track debugger attachment status
+    this.reconnectAttempts = new Map(); // tabId -> attempt count
 
     // Remove page action click handler since we now use popup
     chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
@@ -229,13 +230,13 @@ class TabShareExtension {
       };
 
       // Connect to bridge server
-      const socket = new WebSocket(bridgeUrl);
-
-      const connection = {
+      const socket = new WebSocket(bridgeUrl);      const connection = {
         debuggee,
         socket,
         tabId,
-        sessionId: `pw-tab-${tabId}`
+        sessionId: `pw-tab-${tabId}`,
+        bridgeUrl, // 保存bridgeUrl用于重连
+        isManualDisconnect: false // 标记是否为手动断开
       };
 
       await new Promise((resolve, reject) => {
@@ -410,25 +411,99 @@ class TabShareExtension {
     connection.detachListener = detachListener;
 
     chrome.debugger.onEvent.addListener(eventListener);
-    chrome.debugger.onDetach.addListener(detachListener);
-
-    // Handle WebSocket close
-    socket.onclose = () => {
-      debugLog(`WebSocket closed for tab ${tabId}`);
-      this.disconnectTab(tabId);
+    chrome.debugger.onDetach.addListener(detachListener);    // Handle WebSocket close
+    socket.onclose = (event) => {
+      debugLog(`WebSocket closed for tab ${tabId}, code: ${event.code}, reason: ${event.reason}`);
+      
+      // Only attempt reconnection if not manually disconnected
+      if (!connection.isManualDisconnect) {
+        this.attemptReconnection(tabId);
+      } else {
+        this.disconnectTab(tabId);
+      }
     };
 
     socket.onerror = (error) => {
       debugLog(`WebSocket error for tab ${tabId}:`, error);
-      this.disconnectTab(tabId);
-    };
+      
+      // Only attempt reconnection if not manually disconnected
+      if (!connection.isManualDisconnect) {
+        this.attemptReconnection(tabId);
+      } else {
+        this.disconnectTab(tabId);
+      }
+    };  }
+
+  /**
+   * Attempt to reconnect a tab after connection loss
+   * @param {number} tabId
+   */
+  async attemptReconnection(tabId) {
+    const connection = this.activeConnections.get(tabId);
+    if (!connection) return;
+
+    const currentAttempts = this.reconnectAttempts.get(tabId) || 0;
+    const maxAttempts = 5;
+    const baseDelay = 1000;
+
+    if (currentAttempts >= maxAttempts) {
+      debugLog(`Max reconnection attempts reached for tab ${tabId}, giving up`);
+      await this.disconnectTab(tabId);
+      return;
+    }
+
+    // Exponential backoff with jitter
+    const delay = baseDelay * Math.pow(2, currentAttempts) + Math.random() * 1000;
+    this.reconnectAttempts.set(tabId, currentAttempts + 1);
+
+    debugLog(`Reconnecting tab ${tabId} in ${Math.round(delay)}ms (attempt ${currentAttempts + 1}/${maxAttempts})`);
+
+    // Update UI to show reconnecting status
+    chrome.action.setBadgeText({ tabId, text: '⟳' });
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#FFA500' });
+    chrome.action.setTitle({ tabId, title: `Reconnecting... (${currentAttempts + 1}/${maxAttempts})` });
+
+    setTimeout(async () => {
+      try {
+        const { bridgeUrl } = connection;
+        
+        // Clean up current connection but keep the reconnection flag
+        await this.cleanupConnection(tabId, false);
+        
+        // Try to reconnect
+        await this.connectTab(tabId, bridgeUrl);
+        
+        // Success - reset attempt counter
+        this.reconnectAttempts.delete(tabId);
+        debugLog(`Successfully reconnected tab ${tabId}`);
+        
+      } catch (error) {
+        debugLog(`Reconnection attempt ${currentAttempts + 1} failed for tab ${tabId}:`, error.message);
+        
+        // Try again if we haven't reached max attempts
+        if (currentAttempts + 1 < maxAttempts) {
+          this.attemptReconnection(tabId);
+        } else {
+          debugLog(`All reconnection attempts failed for tab ${tabId}`);
+          await this.disconnectTab(tabId);
+        }
+      }
+    }, delay);
   }
 
   /**
    * Disconnect a tab from the bridge
    * @param {number} tabId
-   */
-  async disconnectTab(tabId) {
+   */  async disconnectTab(tabId) {
+    // Mark as manual disconnect to prevent reconnection attempts
+    const connection = this.activeConnections.get(tabId);
+    if (connection) {
+      connection.isManualDisconnect = true;
+    }
+    
+    // Clear reconnection attempts
+    this.reconnectAttempts.delete(tabId);
+    
     await this.cleanupConnection(tabId);
 
     // Update UI
@@ -437,12 +512,12 @@ class TabShareExtension {
 
     debugLog(`Tab ${tabId} disconnected`);
   }
-
   /**
    * Clean up connection resources
    * @param {number} tabId
+   * @param {boolean} clearReconnectAttempts - Whether to clear reconnection attempts (default: true)
    */
-  async cleanupConnection(tabId) {
+  async cleanupConnection(tabId, clearReconnectAttempts = true) {
     const connection = this.activeConnections.get(tabId);
     if (!connection) return;
 
@@ -471,14 +546,20 @@ class TabShareExtension {
     }
 
     this.activeConnections.delete(tabId);
+    
+    // Clear reconnection attempts if requested
+    if (clearReconnectAttempts) {
+      this.reconnectAttempts.delete(tabId);
+    }
   }
-
   /**
    * Handle tab removal
    * @param {number} tabId
    */
   async onTabRemoved(tabId) {
     if (this.activeConnections.has(tabId)) {
+      // Clear reconnection attempts
+      this.reconnectAttempts.delete(tabId);
       await this.cleanupConnection(tabId);
     }
   }
