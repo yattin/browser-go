@@ -203,6 +203,161 @@ components:
 
 # WebSocket endpoint documentation (not part of OpenAPI 3.0 spec but documented here)
 x-websocket-endpoints:
+  cdp-relay:
+    summary: CDP Relay WebSocket for Playwright MCP
+    description: |
+      WebSocket endpoint for Playwright MCP clients to connect and control Chrome extensions through CDP relay.
+
+      This endpoint provides a full CDP interface that bridges commands between Playwright MCP clients and
+      Chrome extensions. It handles Browser and Target domain methods locally and forwards other commands
+      to the connected extension.
+
+      URL Format:
+         ws://localhost:3000/cdp
+
+      No authentication token is required for CDP relay connections. The endpoint expects a Chrome extension
+      to be connected to the /extension endpoint to relay commands to.
+
+    parameters: []
+
+    responses:
+      101:
+        description: WebSocket connection established successfully
+      500:
+        description: Failed to establish connection
+
+    message-formats:
+      cdp-command:
+        description: Chrome DevTools Protocol command from CDP client
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+              description: Command identifier
+            method:
+              type: string
+              description: CDP method name
+              example: 'Runtime.evaluate'
+            params:
+              type: object
+              description: Command parameters
+            sessionId:
+              type: string
+              description: Target session identifier
+
+      cdp-response:
+        description: Chrome DevTools Protocol response from extension
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+              description: Response identifier matching command
+            result:
+              type: object
+              description: Command result
+            error:
+              type: object
+              description: Error information if command failed
+
+  browser-launch:
+    summary: Launch browser instance via WebSocket
+    description: |
+      Launch a browser instance and establish a WebSocket connection to Chrome DevTools Protocol.
+
+      Two URL formats are supported:
+
+      1. Query String Format:
+         ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
+
+      2. Path Format:
+         ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
+
+  extension-bridge:
+    summary: Chrome Extension Bridge WebSocket
+    description: |
+      WebSocket endpoint for Chrome extensions to connect and bridge CDP commands through chrome.debugger API.
+
+      This endpoint is compatible with Chrome extensions that use the chrome.debugger API to send CDP commands
+      to browser tabs. The service acts as a bridge between the extension and a managed Chrome instance.
+
+      URL Format:
+         ws://localhost:3000/extension
+
+      No authentication token is required for extension connections. Each extension connection automatically
+      creates a virtual user session with dedicated Chrome instance and user data directory.
+
+    parameters: []
+
+    responses:
+      101:
+        description: WebSocket connection established successfully
+      503:
+        description: Maximum concurrent instances limit reached
+      500:
+        description: Failed to launch Chrome instance
+
+    message-formats:
+      connection_info:
+        description: Initial message sent by extension to establish connection
+        schema:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [connection_info]
+            sessionId:
+              type: string
+              description: Session identifier for the extension connection
+            targetInfo:
+              type: object
+              description: Target information from the browser tab
+              properties:
+                targetId:
+                  type: string
+                type:
+                  type: string
+                  enum: [page]
+                title:
+                  type: string
+                url:
+                  type: string
+
+      cdp-command:
+        description: Chrome DevTools Protocol command from extension
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+              description: Command identifier
+            method:
+              type: string
+              description: CDP method name
+              example: 'Runtime.evaluate'
+            params:
+              type: object
+              description: Command parameters
+            sessionId:
+              type: string
+              description: Target session identifier
+
+      cdp-response:
+        description: Chrome DevTools Protocol response to extension
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+              description: Response identifier matching command
+            result:
+              type: object
+              description: Command result
+            error:
+              type: object
+              description: Error information if command failed
+
   browser-launch:
     summary: Launch browser instance via WebSocket
     description: |
