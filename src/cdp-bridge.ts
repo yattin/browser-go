@@ -147,8 +147,74 @@ export class CDPRelayBridge {
       return;
     }
 
-    // CDP event from extension - forward to all relevant CDP connections
-    logger.info(`← Extension message: ${message.method ?? (message.id && `response(id=${message.id})`) ?? 'unknown'}`);
+    // Handle ping messages (heartbeat)
+    if (message.type === 'ping') {
+      logger.debug(`← Extension heartbeat from device: ${message.deviceId}`);
+      
+      // Update device last seen time
+      if (message.deviceId) {
+        const device = this.deviceManager.getDevice(message.deviceId);
+        if (device) {
+          device.lastSeen = new Date();
+        }
+      }
+      
+      // Send pong response
+      extensionSocket.send(JSON.stringify({
+        type: 'pong',
+        deviceId: message.deviceId,
+        timestamp: Date.now()
+      }));
+      return;
+    }
+
+    // Determine message type for logging and handling
+    let messageType: string;
+    if (message.method) {
+      messageType = message.method;
+    } else if (message.id) {
+      if (message.error) {
+        messageType = `error_response(id=${message.id}, code=${message.error.code})`;
+      } else {
+        messageType = `response(id=${message.id})`;
+      }
+    } else if (message.error) {
+      // Handle standalone error messages (no id)
+      messageType = `standalone_error(code=${message.error.code})`;
+    } else {
+      messageType = 'unknown';
+    }
+
+    logger.info(`← Extension message: ${messageType}`);
+    
+    // Handle error responses specially
+    if (message.error) {
+      if (message.error.code === -32000) {
+        logger.warn(`← Extension reported error -32000: ${message.error.message}`);
+        
+        // For standalone API errors, provide additional context
+        if (!message.id && message.error.message.includes('debugger.sendCommand')) {
+          logger.error('Chrome Extension API error: debugger.sendCommand parameter signature mismatch');
+          logger.error('This usually indicates incorrect parameter types or missing debugger attachment');
+        }
+      } else {
+        logger.warn(`← Extension reported error ${message.error.code}: ${message.error.message}`);
+      }
+    }
+    
+    // Print full message body for unknown messages or for debugging
+    if (messageType === 'unknown') {
+      logger.info('← Extension unknown message body:', message);
+    }
+    
+    // Handle message forwarding based on type
+    if (message.error && !message.id) {
+      // Standalone error messages are not forwarded to CDP clients
+      // as they don't correspond to any specific request
+      logger.info('Standalone error message not forwarded to CDP clients');
+      return;
+    }
+    
     this._forwardToCDPClients(extensionSocket, message);
   }
 
@@ -188,7 +254,7 @@ export class CDPRelayBridge {
     if (!connection) return;
 
     switch (message.method) {
-      case 'Target.setAutoAttach':
+      case 'Target.setAutoAttach': {
         // Get device connection info for auto-attach simulation
         const device = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
         const connectionInfo = device?.connectionInfo;
@@ -214,8 +280,9 @@ export class CDPRelayBridge {
           this._forwardToExtension(cdpSocket, message);
         }
         break;
+      }
 
-      case 'Target.getTargets':
+      case 'Target.getTargets': {
         const targetInfos = [];
         const deviceInfo = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
         
@@ -231,6 +298,7 @@ export class CDPRelayBridge {
           result: { targetInfos }
         });
         break;
+      }
 
       default:
         this._forwardToExtension(cdpSocket, message);
@@ -276,14 +344,35 @@ export class CDPRelayBridge {
       }
     }
 
+    if (!deviceId) {
+      logger.warn('Cannot forward message: device ID not found for extension socket');
+      return;
+    }
+
     // Forward to CDP connections for this device
+    let forwarded = false;
     for (const [cdpSocket, connection] of this.cdpConnections.entries()) {
-      if (connection.deviceId === deviceId || (!connection.deviceId && !deviceId)) {
+      if (connection.deviceId === deviceId) {
         if (cdpSocket.readyState === WebSocket.OPEN) {
-          logger.info(`→ CDP (${connection.deviceId || 'unrouted'}): ${JSON.stringify(message)}`);
-          cdpSocket.send(JSON.stringify(message));
+          try {
+            const logMessage = message.error 
+              ? `error_response(id=${message.id}, code=${message.error.code})`
+              : (message.method || `response(id=${message.id})`);
+            
+            logger.info(`→ CDP (${connection.deviceId}): ${logMessage}`);
+            cdpSocket.send(JSON.stringify(message));
+            forwarded = true;
+          } catch (error) {
+            logger.error(`Failed to forward message to CDP client: ${error}`);
+          }
+        } else {
+          logger.warn(`CDP client socket is not open for device: ${deviceId}`);
         }
       }
+    }
+
+    if (!forwarded) {
+      logger.warn(`No active CDP connections found for device: ${deviceId}`);
     }
   }
 

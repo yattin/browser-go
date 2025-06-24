@@ -8,11 +8,18 @@ Browser-Go is a Chrome DevTools Protocol (CDP) based browser management service 
 
 ### Core Architecture
 
-The application consists of three main components:
+The application consists of several modular components:
 
-1. **Main Service (`src/cli.ts`)**: Express server with WebSocket upgrade handling for Chrome instance proxying
-2. **Logger (`src/logger.ts`)**: Winston-based logging with daily rotation and console/file output
-3. **Type Definitions (`src/types.ts`)**: TypeScript interfaces for API responses, configuration, and internal data structures
+1. **Main Service (`src/cli.ts`)**: Express server entry point that integrates all modules and starts HTTP/WebSocket server
+2. **Chrome Manager (`src/chrome-manager.ts`)**: Chrome instance lifecycle management with caching and automatic cleanup
+3. **Device Manager (`src/device-manager.ts`)**: Chrome extension device registration and routing management
+4. **CDP Bridge (`src/cdp-bridge.ts`)**: Chrome DevTools Protocol relay bridge for WebSocket communication  
+5. **WebSocket Handlers (`src/websocket-handlers.ts`)**: WebSocket connection handling and protocol routing
+6. **API Routes (`src/api-routes.ts`)**: RESTful API endpoint definitions for browser instance management
+7. **Configuration (`src/config.ts`)**: Application configuration management and command-line argument parsing
+8. **Logger (`src/logger.ts`)**: Winston-based logging with daily rotation and console/file output
+9. **Type Definitions (`src/types.ts`)**: TypeScript interfaces for API responses, configuration, and internal data structures
+10. **OpenAPI (`src/openapi.ts`)**: OpenAPI specification loading and parsing utilities
 
 ### Key Features
 
@@ -22,6 +29,8 @@ The application consists of three main components:
 - User session persistence via dedicated Chrome user data directories
 - RESTful API for instance control (stop, list, stats)
 - Swagger UI documentation at `/api-docs`
+- Chrome extension device registration and management
+- CDP bridge for extension-to-service communication
 
 ## Build, Lint, and Test Commands
 
@@ -33,9 +42,9 @@ The application consists of three main components:
     - `pnpm run lint`: Checks for linting issues.
     - `pnpm run lint:fix`: Checks and attempts to automatically fix linting issues.
   - ESLint is configured via `eslint.config.js` (which uses `FlatCompat` to load `.eslintrc.cjs`).
-- **Run Tests**: `pnpm run test`
-  - This command executes the compiled test script at `dist/test.js`.
-  - To run a single test file (if applicable, depends on test runner): The current `test.ts` is a single script. If a test runner like Jest is integrated later, this command would change.
+- **Run Tests**: Two core test suites available:
+  - `pnpm run test:bridge` - Test CDP bridge functionality (unit test)
+  - `pnpm run test:e2e:script` - Complete end-to-end test with real Chrome and extension
 - **Start Application**: `pnpm run start`
   - This command executes the compiled main application script at `dist/cli.js`.
   - Alternatively, after building: `node dist/cli.js [options]`
@@ -96,6 +105,22 @@ Launch parameters (`launch`) are JSON-formatted and include:
 - **Automatic Cleanup**: Inactive instances are cleaned up based on configurable timeout (default: 60 minutes)
 - **Concurrent Limits**: Configurable maximum concurrent instances (default: 10)
 
+## Chrome Extension Integration
+
+The project includes a Chrome extension (`extension/`) that provides device registration and CDP communication:
+
+### Extension Components
+- **Manifest (`extension/manifest.json`)**: Extension configuration with permissions for tabs, activeTab, and CDP access
+- **Background Script (`extension/background.js`)**: Handles device registration and WebSocket communication
+- **Popup Interface (`extension/popup.html`, `extension/popup.js`)**: User interface for extension interaction
+- **Icons (`extension/icons/`)**: Extension icons in multiple sizes (16x16, 32x32, 48x48, 128x128)
+
+### Device Management Flow
+1. **Device Registration**: Extensions register with unique device IDs via WebSocket
+2. **Connection Routing**: DeviceManager routes connections between clients and registered devices
+3. **CDP Bridging**: CDP messages are relayed between extension devices and client connections
+4. **Lifecycle Management**: Automatic cleanup of disconnected devices and stale connections
+
 ## API Endpoints
 
 - `GET /api/v1/browser/stop?user_id=<id>` - Stop specific browser instance
@@ -145,6 +170,32 @@ Logs are written to:
 - **Console**: Colorized format for development
 - **Files**: `~/.browser-go/logs/browser-go-YYYY-MM-DD.log` with daily rotation
 - **Retention**: 10 days, 10MB per file maximum
+
+## Test Architecture
+
+The project uses a comprehensive testing system with custom test runner:
+
+### Test Categories
+- **Unit Tests**: Test individual components in isolation (DeviceManager, ChromeManager, etc.)
+- **Integration Tests**: Test component interactions and API endpoints
+- **End-to-End Tests**: Full system testing with real Chrome instances and WebSocket connections
+
+### Test Runner (`src/test-runner.ts`)
+Custom test orchestration system that provides:
+- Parallel test execution support
+- Test categorization and filtering
+- Unified reporting across all test suites
+- Verbose and quiet output modes
+- Individual test suite execution
+
+### Test Files Structure
+- `test.ts` - Basic functionality tests
+- `test-bridge.ts` - CDP bridge testing
+- `test-extension.ts` - Chrome extension integration tests
+- `test-device-*.ts` - Device management system tests
+- `test-api-endpoints.ts` - REST API endpoint tests
+- `test-heartbeat.ts` - Ping/pong heartbeat mechanism tests
+- `test-runner.ts` - Test orchestration and reporting
 
 ## Error Handling Patterns
 

@@ -37,15 +37,11 @@ class PopupController {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     this.currentTab = tab;
 
-    // Load saved bridge URL
-    const result = await chrome.storage.sync.get(['bridgeUrl']);
-    const savedUrl = result.bridgeUrl || 'ws://localhost:3000/extension';
-    this.bridgeUrlInput.value = savedUrl;
-    this.bridgeUrlInput.disabled = false;
+    // Set default bridge URL (read-only for display)
+    this.bridgeUrlInput.value = 'ws://localhost:3000/extension';
+    this.bridgeUrlInput.disabled = true; // Always disabled for auto-connection mode
 
-    // Set up event listeners
-    this.bridgeUrlInput.addEventListener('input', this.onUrlChange.bind(this));
-    this.connectBtn.addEventListener('click', this.onConnectClick.bind(this));
+    // URL input is now display-only, no event listeners needed
     
     // Set up device ID click to copy
     if (this.deviceIdElement) {
@@ -65,7 +61,7 @@ class PopupController {
       tabId: this.currentTab.id
     });
 
-    const { isConnected, activeTabId, activeTabInfo, error, deviceId } = response;
+    const { isConnected, activeTabId, activeTabInfo, error, deviceId, connectionState } = response;
 
     // Update device ID display
     if (this.deviceIdElement) {
@@ -88,10 +84,11 @@ class PopupController {
 
     if (error) {
       this.showStatus('error', `Error: ${error}`);
-      this.showConnectButton();
+      this.showWaitingMessage();
     } else if (isConnected && activeTabId === this.currentTab.id) {
       // Current tab is connected
-      this.showStatus('connected', 'This tab is currently shared with MCP server');
+      const stateMessage = this.getConnectionStateMessage(connectionState);
+      this.showStatus('connected', stateMessage);
       this.showDisconnectButton();
     } else if (isConnected && activeTabId !== this.currentTab.id) {
       // Another tab is connected
@@ -99,8 +96,10 @@ class PopupController {
       this.showActiveTabInfo(activeTabInfo);
       this.showFocusButton(activeTabId);
     } else {
-      // No connection
-      this.showConnectButton();
+      // No connection - show current state
+      const stateMessage = this.getConnectionStateMessage(connectionState);
+      this.showStatus('info', stateMessage);
+      this.showWaitingMessage();
     }
   }
 
@@ -111,21 +110,34 @@ class PopupController {
     this.statusContainer.appendChild(statusDiv);
   }
 
-  showConnectButton() {
+  getConnectionStateMessage(connectionState) {
+    switch (connectionState) {
+      case 'connecting':
+        return 'Connecting to bridge server...';
+      case 'connected':
+        return 'This tab is shared with MCP server';
+      case 'reconnecting':
+        return 'Reconnecting to bridge server...';
+      case 'error':
+        return 'Connection failed - will retry automatically';
+      case 'disconnected':
+      default:
+        return 'Ready for auto-connection';
+    }
+  }
+
+  showWaitingMessage() {
     if (!this.actionContainer) return;
 
     this.actionContainer.innerHTML = `
-      <button id="connect-btn" class="button">Share This Tab</button>
+      <div class="waiting-message">
+        <div class="status info">Auto-connection is enabled</div>
+        <div class="small-text">
+          The extension will automatically connect to this tab when you make it active.
+          Switch away and back to this tab to trigger connection.
+        </div>
+      </div>
     `;
-
-    const connectBtn = /** @type {HTMLButtonElement} */ (document.getElementById('connect-btn'));
-    if (connectBtn) {
-      connectBtn.addEventListener('click', this.onConnectClick.bind(this));
-
-      // Disable if URL is invalid
-      const isValidUrl = this.bridgeUrlInput ? this.isValidWebSocketUrl(this.bridgeUrlInput.value) : false;
-      connectBtn.disabled = !isValidUrl;
-    }
   }
 
   showDisconnectButton() {
@@ -181,38 +193,17 @@ class PopupController {
     }
   }
 
+  // Connection is now handled automatically by background script
+  // This method is disabled to make popup display-only
   async onConnectClick() {
-    if (!this.bridgeUrlInput || !this.currentTab?.id) return;
-
-    const url = this.bridgeUrlInput.value.trim();
-    if (!this.isValidWebSocketUrl(url)) {
-      this.showStatus('error', 'Please enter a valid WebSocket URL');
-      return;
-    }
-
-    // Save URL to storage
-    await chrome.storage.sync.set({ bridgeUrl: url });
-
-    // Send connect message to background script
-    const response = await chrome.runtime.sendMessage({
-      type: 'connect',
-      tabId: this.currentTab.id,
-      bridgeUrl: url
-    });
-
-    if (response.success) {
-      await this.updateUI();
-    } else {
-      this.showStatus('error', response.error || 'Failed to connect');
-    }
+    // No longer used - auto-connection handles this
+    console.log('Manual connection disabled - using auto-connection');
   }
 
   async onDisconnectClick() {
-    if (!this.currentTab?.id) return;
-
     const response = await chrome.runtime.sendMessage({
-      type: 'disconnect',
-      tabId: this.currentTab.id
+      type: 'disconnect'
+      // No tabId needed - background script handles current connection
     });
 
     if (response.success) {

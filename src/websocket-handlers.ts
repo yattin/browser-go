@@ -276,6 +276,8 @@ export class WebSocketHandlers {
     const searchParams = url.searchParams;
     const pathParams = this.parsePathParameters(url.pathname);
 
+    console.log(`WebSocket upgrade request: ${url.pathname}`);
+
     // Check if this is a CDP relay connection
     if (url.pathname === '/cdp') {
       const deviceId = searchParams.get('deviceId');

@@ -29,21 +29,38 @@ function debugLog(...args) {
 
 class TabShareExtension {
   constructor() {
-    this.activeConnections = new Map(); // tabId -> connection info
+    // Single connection mode - only track current active tab
+    this.currentConnection = null; // Single connection object
+    this.currentTabId = null; // Currently connected tab ID
     this.autoConnectEnabled = true; // Enable auto-connect for testing
     this.defaultBridgeUrl = 'ws://localhost:3000/extension'; // Default bridge URL
     this.deviceId = null; // Will be initialized from storage
     this.isAttached = false; // Track debugger attachment status
-    this.reconnectAttempts = new Map(); // tabId -> attempt count
+    this.reconnectAttempts = 0; // Single counter for current tab
+    this.connectionState = 'disconnected'; // 'disconnected', 'connecting', 'connected', 'reconnecting', 'error'
+    
+    // Guardian timer for connection health monitoring
+    this.guardianTimer = null;
+    this.guardianInterval = 10000; // Check every 10 seconds
+    this.lastHeartbeat = null;
 
-    // Remove page action click handler since we now use popup
+    // Tab change monitoring
+    chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
+    chrome.tabs.onUpdated.addListener(this.onTabUpdated.bind(this));
     chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
+
+    // Extension lifecycle monitoring
+    chrome.runtime.onStartup.addListener(this.onExtensionStartup.bind(this));
+    chrome.runtime.onInstalled.addListener(this.onExtensionInstalled.bind(this));
 
     // Handle messages from popup
     chrome.runtime.onMessage.addListener(this.onMessage.bind(this));
 
     // Initialize device ID and auto-connect
     this.initDevice().then(() => {
+      // Start guardian timer
+      this.startGuardianTimer();
+      
       if (this.autoConnectEnabled) {
         this.initAutoConnect();
       }
@@ -95,22 +112,224 @@ class TabShareExtension {
   }
 
   /**
+   * Handle tab activation (switching between tabs)
+   */
+  async onTabActivated(activeInfo) {
+    const { tabId } = activeInfo;
+    debugLog(`Tab activated: ${tabId}`);
+    
+    // Auto-connect to activated tab if we don't have a connection
+    if (!this.currentConnection && this.autoConnectEnabled) {
+      try {
+        await this.connectTab(tabId, this.defaultBridgeUrl);
+        debugLog(`Auto-connected to activated tab ${tabId}`);
+      } catch (error) {
+        debugLog(`Auto-connect failed for tab ${tabId}:`, error.message);
+      }
+    }
+    // If we have an active connection and it's not for this tab, switch connection
+    else if (this.currentConnection && this.currentTabId !== tabId) {
+      await this.switchToTab(tabId);
+    }
+  }
+
+  /**
+   * Handle tab updates (URL changes, loading states)
+   */
+  async onTabUpdated(tabId, changeInfo, tab) {
+    // Only handle completed page loads for the current connected tab
+    if (this.currentTabId === tabId && changeInfo.status === 'complete' && this.currentConnection) {
+      debugLog(`Current tab ${tabId} page loaded: ${tab.url}`);
+      // Update connection info if needed
+      this.updateBadgeState();
+    }
+  }
+
+  /**
+   * Switch connection to a new active tab
+   */
+  async switchToTab(newTabId) {
+    try {
+      debugLog(`Switching connection from tab ${this.currentTabId} to tab ${newTabId}`);
+      
+      const oldTabId = this.currentTabId;
+      const bridgeUrl = this.currentConnection?.bridgeUrl || this.defaultBridgeUrl;
+      
+      // Disconnect from current tab (but don't clear device state)
+      if (this.currentConnection) {
+        this.currentConnection.isManualDisconnect = true; // Prevent reconnection
+        await this.cleanupConnection(false);
+      }
+      
+      // Connect to new tab
+      await this.connectTab(newTabId, bridgeUrl);
+      
+      // Clear badge on old tab
+      if (oldTabId) {
+        chrome.action.setBadgeText({ tabId: oldTabId, text: '' });
+        chrome.action.setTitle({ tabId: oldTabId, title: 'Share tab with Playwright MCP' });
+      }
+      
+      debugLog(`Successfully switched to tab ${newTabId}`);
+    } catch (error) {
+      debugLog(`Failed to switch to tab ${newTabId}:`, error.message);
+      this.setConnectionState('error');
+    }
+  }
+
+  /**
+   * Start guardian timer for connection health monitoring
+   */
+  startGuardianTimer() {
+    if (this.guardianTimer) {
+      clearInterval(this.guardianTimer);
+    }
+    
+    this.guardianTimer = setInterval(() => {
+      this.checkConnectionHealth();
+    }, this.guardianInterval);
+    
+    debugLog('Guardian timer started');
+  }
+
+  /**
+   * Stop guardian timer
+   */
+  stopGuardianTimer() {
+    if (this.guardianTimer) {
+      clearInterval(this.guardianTimer);
+      this.guardianTimer = null;
+      debugLog('Guardian timer stopped');
+    }
+  }
+
+  /**
+   * Check connection health and trigger reconnection if needed
+   */
+  async checkConnectionHealth() {
+    if (!this.currentConnection) return;
+    
+    const now = Date.now();
+    const connection = this.currentConnection;
+    
+    // Check WebSocket state
+    if (connection.socket && connection.socket.readyState !== WebSocket.OPEN) {
+      debugLog('Guardian detected WebSocket not open, triggering reconnection');
+      this.attemptReconnection();
+      return;
+    }
+    
+    // Check heartbeat timeout (if no activity for 30 seconds)
+    if (this.lastHeartbeat && (now - this.lastHeartbeat) > 30000) {
+      debugLog('Guardian detected heartbeat timeout, triggering reconnection');
+      this.attemptReconnection();
+      return;
+    }
+    
+    // Send ping to keep connection alive
+    if (connection.socket && connection.socket.readyState === WebSocket.OPEN) {
+      try {
+        connection.socket.send(JSON.stringify({
+          type: 'ping',
+          deviceId: this.deviceId,
+          timestamp: now
+        }));
+        this.lastHeartbeat = now;
+      } catch (error) {
+        debugLog('Guardian ping failed:', error.message);
+        this.attemptReconnection();
+      }
+    }
+  }
+
+  /**
+   * Set connection state and update badge
+   */
+  setConnectionState(state) {
+    this.connectionState = state;
+    this.updateBadgeState();
+    debugLog(`Connection state changed to: ${state}`);
+  }
+
+  /**
+   * Update badge based on current connection state
+   */
+  updateBadgeState() {
+    if (!this.currentTabId) return;
+    
+    const tabId = this.currentTabId;
+    
+    switch (this.connectionState) {
+      case 'disconnected':
+        chrome.action.setBadgeText({ tabId, text: '' });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#808080' });
+        chrome.action.setTitle({ tabId, title: 'Share tab with Playwright MCP' });
+        break;
+        
+      case 'connecting':
+        chrome.action.setBadgeText({ tabId, text: '⋯' });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#2196F3' });
+        chrome.action.setTitle({ tabId, title: 'Connecting to Playwright MCP...' });
+        break;
+        
+      case 'connected':
+        chrome.action.setBadgeText({ tabId, text: '●' });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#4CAF50' });
+        chrome.action.setTitle({ tabId, title: `Connected to Playwright MCP (Device: ${this.deviceId})` });
+        break;
+        
+      case 'reconnecting':
+        chrome.action.setBadgeText({ tabId, text: '⟳' });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#FF9800' });
+        chrome.action.setTitle({ tabId, title: `Reconnecting... (${this.reconnectAttempts}/5)` });
+        break;
+        
+      case 'error':
+        chrome.action.setBadgeText({ tabId, text: '!' });
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#F44336' });
+        chrome.action.setTitle({ tabId, title: 'Connection failed - Click to retry' });
+        break;
+    }
+  }
+
+  /**
    * Initialize auto-connect functionality
    */
   async initAutoConnect() {
     // Wait a bit for extension to fully initialize
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
     try {
-      // Get the active tab
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (activeTab && activeTab.id) {
-        debugLog(`Auto-connecting to tab ${activeTab.id}: ${activeTab.url}`);
-        await this.connectTab(activeTab.id, this.defaultBridgeUrl);
+      // In service worker, we need to find the most recently active tab
+      // across all windows since there's no "current window" context
+      const allTabs = await chrome.tabs.query({ active: true });
+      
+      if (allTabs.length > 0) {
+        // Sort by lastAccessed if available, otherwise use the first active tab
+        const activeTab = allTabs.sort((a, b) => {
+          const aTime = a.lastAccessed || 0;
+          const bTime = b.lastAccessed || 0;
+          return bTime - aTime;
+        })[0];
+        
+        if (activeTab && activeTab.id) {
+          debugLog(`Auto-connecting to most recent active tab ${activeTab.id}: ${activeTab.url}`);
+          await this.connectTab(activeTab.id, this.defaultBridgeUrl);
+          return;
+        }
       }
+      
+      // Fallback: get any available tab
+      const anyTab = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+      if (anyTab.length > 0 && anyTab[0].id) {
+        debugLog(`Auto-connecting to first available tab ${anyTab[0].id}: ${anyTab[0].url}`);
+        await this.connectTab(anyTab[0].id, this.defaultBridgeUrl);
+      }
+      
     } catch (error) {
       debugLog('Auto-connect failed:', error.message);
-      // If auto-connect fails, user can still manually connect via popup
+      debugLog('Will auto-connect when user activates a tab');
+      // Extension will auto-connect when user activates any tab via onTabActivated
     }
   }
 
@@ -141,7 +360,7 @@ class TabShareExtension {
         return true; // Will respond asynchronously
 
       case 'disconnect':
-        this.disconnectTab(message.tabId).then(
+        this.disconnectTab().then(
           () => sendResponse({ success: true }),
           (error) => sendResponse({ success: false, error: error.message })
         );
@@ -165,27 +384,24 @@ class TabShareExtension {
       }
     }
 
-    const isConnected = this.activeConnections.size > 0;
-    let activeTabId = null;
-    let activeTabInfo = null;
-
-    if (isConnected) {
-      const [tabId, connection] = this.activeConnections.entries().next().value;
-      activeTabId = tabId;
-
-      // Get tab info
-      chrome.tabs.get(tabId, (tab) => {
+    const isConnected = this.currentConnection !== null;
+    
+    if (isConnected && this.currentTabId) {
+      // Get current tab info
+      chrome.tabs.get(this.currentTabId, (tab) => {
         if (chrome.runtime.lastError) {
           sendResponse({
             isConnected: false,
             deviceId: this.deviceId,
+            connectionState: this.connectionState,
             error: 'Active tab not found'
           });
         } else {
           sendResponse({
             isConnected: true,
             deviceId: this.deviceId,
-            activeTabId,
+            connectionState: this.connectionState,
+            activeTabId: this.currentTabId,
             activeTabInfo: {
               title: tab.title,
               url: tab.url
@@ -197,6 +413,7 @@ class TabShareExtension {
       sendResponse({
         isConnected: false,
         deviceId: this.deviceId,
+        connectionState: this.connectionState,
         activeTabId: null,
         activeTabInfo: null
       });
@@ -211,6 +428,13 @@ class TabShareExtension {
   async connectTab(tabId, bridgeUrl) {
     try {
       debugLog(`Connecting tab ${tabId} to bridge at ${bridgeUrl}`);
+      
+      // Disconnect any existing connection first
+      if (this.currentConnection) {
+        await this.cleanupConnection(true);
+      }
+      
+      this.setConnectionState('connecting');
 
       // Prepare debuggee but don't attach yet (lazy attach)
       const debuggee = { tabId };
@@ -230,7 +454,8 @@ class TabShareExtension {
       };
 
       // Connect to bridge server
-      const socket = new WebSocket(bridgeUrl);      const connection = {
+      const socket = new WebSocket(bridgeUrl);
+      const connection = {
         debuggee,
         socket,
         tabId,
@@ -272,25 +497,19 @@ class TabShareExtension {
       // Set up message handling
       this.setupMessageHandling(connection);
 
-      // Store connection
-      this.activeConnections.set(tabId, connection);
-
-      // Update UI
-      chrome.action.setBadgeText({ tabId, text: '●' });
-      chrome.action.setBadgeBackgroundColor({ tabId, color: '#4CAF50' });
-      chrome.action.setTitle({ tabId, title: 'Disconnect from Playwright MCP' });
-
+      // Store as current connection
+      this.currentConnection = connection;
+      this.currentTabId = tabId;
+      this.reconnectAttempts = 0; // Reset reconnect attempts
+      this.lastHeartbeat = Date.now(); // Initialize heartbeat
+      
+      this.setConnectionState('connected');
       debugLog(`Tab ${tabId} connected successfully`);
 
     } catch (error) {
       debugLog(`Failed to connect tab ${tabId}:`, error.message);
-      await this.cleanupConnection(tabId);
-
-      // Show error to user
-      chrome.action.setBadgeText({ tabId, text: '!' });
-      chrome.action.setBadgeBackgroundColor({ tabId, color: '#F44336' });
-      chrome.action.setTitle({ tabId, title: `Connection failed: ${error.message}` });
-
+      await this.cleanupConnection(true);
+      this.setConnectionState('error');
       throw error; // Re-throw for popup to handle
     }
   }
@@ -315,6 +534,15 @@ class TabShareExtension {
             message: `Error parsing message: ${error.message}`
           }
         }));
+        return;
+      }
+
+      // Update heartbeat on any message
+      this.lastHeartbeat = Date.now();
+
+      // Handle pong responses from server (heartbeat response)
+      if (message.type === 'pong') {
+        debugLog('Received pong from server');
         return;
       }
 
@@ -343,17 +571,41 @@ class TabShareExtension {
           }
         }
 
+        // Validate message parameters before calling debugger API
+        if (!message.method || typeof message.method !== 'string') {
+          debugLog('Invalid message method:', message.method);
+          const response = {
+            id: message.id,
+            sessionId: message.sessionId,
+            error: {
+              code: -32000,
+              message: 'Invalid or missing method parameter',
+            },
+          };
+          socket.send(JSON.stringify(response));
+          return;
+        }
+
         const debuggerSession = { ...debuggee };
         const sessionId = message.sessionId;
         // Pass session id, unless it's the root session.
-        if (sessionId && sessionId !== rootSessionId)
+        if (sessionId && sessionId !== rootSessionId && typeof sessionId === 'string')
           debuggerSession.sessionId = sessionId;
+
+        // Ensure params is an object
+        const params = message.params && typeof message.params === 'object' ? message.params : {};
+
+        debugLog('Calling chrome.debugger.sendCommand with:', {
+          debuggerSession,
+          method: message.method,
+          params
+        });
 
         // Forward CDP command to chrome.debugger
         const result = await chrome.debugger.sendCommand(
           debuggerSession,
           message.method,
-          message.params || {}
+          params || {}
         );
 
         // Send response back to bridge
@@ -373,12 +625,29 @@ class TabShareExtension {
         socket.send(JSON.stringify(response));
       } catch (error) {
         debugLog('Error processing WebSocket message:', error);
+        debugLog('Error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        });
+        
+        // Check if this is a Chrome Extension API error
+        let errorMessage = error.message;
+        if (error.message && error.message.includes('debugger.sendCommand')) {
+          errorMessage = `Chrome Extension API error: ${error.message}`;
+          debugLog('This may be due to:');
+          debugLog('1. Invalid debugger session or tab ID');
+          debugLog('2. Incorrect parameter types');
+          debugLog('3. Debugger not attached properly');
+          debugLog('4. Invalid CDP method or parameters');
+        }
+        
         const response = {
           id: message.id,
           sessionId: message.sessionId,
           error: {
             code: -32000,
-            message: error.message,
+            message: errorMessage,
           },
         };
         socket.send(JSON.stringify(response));
@@ -411,115 +680,117 @@ class TabShareExtension {
     connection.detachListener = detachListener;
 
     chrome.debugger.onEvent.addListener(eventListener);
-    chrome.debugger.onDetach.addListener(detachListener);    // Handle WebSocket close
+    chrome.debugger.onDetach.addListener(detachListener);
+
+    // Handle WebSocket close
     socket.onclose = (event) => {
       debugLog(`WebSocket closed for tab ${tabId}, code: ${event.code}, reason: ${event.reason}`);
       
-      // Only attempt reconnection if not manually disconnected
-      if (!connection.isManualDisconnect) {
-        this.attemptReconnection(tabId);
-      } else {
-        this.disconnectTab(tabId);
+      // Only attempt reconnection if not manually disconnected and this is current connection
+      if (!connection.isManualDisconnect && this.currentConnection === connection) {
+        this.attemptReconnection();
+      } else if (this.currentConnection === connection) {
+        this.disconnectTab();
       }
     };
 
+    // Handle WebSocket error
     socket.onerror = (error) => {
       debugLog(`WebSocket error for tab ${tabId}:`, error);
       
-      // Only attempt reconnection if not manually disconnected
-      if (!connection.isManualDisconnect) {
-        this.attemptReconnection(tabId);
-      } else {
-        this.disconnectTab(tabId);
+      // Only attempt reconnection if not manually disconnected and this is current connection
+      if (!connection.isManualDisconnect && this.currentConnection === connection) {
+        this.attemptReconnection();
+      } else if (this.currentConnection === connection) {
+        this.disconnectTab();
       }
-    };  }
+    };
+
+  }
 
   /**
-   * Attempt to reconnect a tab after connection loss
-   * @param {number} tabId
+   * Attempt to reconnect current tab after connection loss
    */
-  async attemptReconnection(tabId) {
-    const connection = this.activeConnections.get(tabId);
-    if (!connection) return;
+  async attemptReconnection() {
+    if (!this.currentConnection || !this.currentTabId) return;
 
-    const currentAttempts = this.reconnectAttempts.get(tabId) || 0;
     const maxAttempts = 5;
     const baseDelay = 1000;
 
-    if (currentAttempts >= maxAttempts) {
-      debugLog(`Max reconnection attempts reached for tab ${tabId}, giving up`);
-      await this.disconnectTab(tabId);
+    if (this.reconnectAttempts >= maxAttempts) {
+      debugLog(`Max reconnection attempts reached for tab ${this.currentTabId}, giving up`);
+      await this.disconnectTab();
       return;
     }
 
     // Exponential backoff with jitter
-    const delay = baseDelay * Math.pow(2, currentAttempts) + Math.random() * 1000;
-    this.reconnectAttempts.set(tabId, currentAttempts + 1);
+    const delay = baseDelay * Math.pow(2, this.reconnectAttempts) + Math.random() * 1000;
+    this.reconnectAttempts++;
 
-    debugLog(`Reconnecting tab ${tabId} in ${Math.round(delay)}ms (attempt ${currentAttempts + 1}/${maxAttempts})`);
+    debugLog(`Reconnecting tab ${this.currentTabId} in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${maxAttempts})`);
 
-    // Update UI to show reconnecting status
-    chrome.action.setBadgeText({ tabId, text: '⟳' });
-    chrome.action.setBadgeBackgroundColor({ tabId, color: '#FFA500' });
-    chrome.action.setTitle({ tabId, title: `Reconnecting... (${currentAttempts + 1}/${maxAttempts})` });
+    this.setConnectionState('reconnecting');
 
     setTimeout(async () => {
       try {
-        const { bridgeUrl } = connection;
+        if (!this.currentConnection || !this.currentTabId) {
+          debugLog('Connection or tab info lost during reconnection delay');
+          return;
+        }
+
+        const { bridgeUrl } = this.currentConnection;
+        const tabId = this.currentTabId;
         
-        // Clean up current connection but keep the reconnection flag
-        await this.cleanupConnection(tabId, false);
+        // Clean up current connection but keep tab ID for reconnection
+        await this.cleanupConnection(false);
         
         // Try to reconnect
         await this.connectTab(tabId, bridgeUrl);
         
         // Success - reset attempt counter
-        this.reconnectAttempts.delete(tabId);
+        this.reconnectAttempts = 0;
         debugLog(`Successfully reconnected tab ${tabId}`);
         
       } catch (error) {
-        debugLog(`Reconnection attempt ${currentAttempts + 1} failed for tab ${tabId}:`, error.message);
+        debugLog(`Reconnection attempt ${this.reconnectAttempts} failed for tab ${this.currentTabId}:`, error.message);
         
         // Try again if we haven't reached max attempts
-        if (currentAttempts + 1 < maxAttempts) {
-          this.attemptReconnection(tabId);
+        if (this.reconnectAttempts < maxAttempts) {
+          this.attemptReconnection();
         } else {
-          debugLog(`All reconnection attempts failed for tab ${tabId}`);
-          await this.disconnectTab(tabId);
+          debugLog(`All reconnection attempts failed for tab ${this.currentTabId}`);
+          await this.disconnectTab();
         }
       }
     }, delay);
   }
 
   /**
-   * Disconnect a tab from the bridge
-   * @param {number} tabId
-   */  async disconnectTab(tabId) {
+   * Disconnect current tab from the bridge
+   */
+  async disconnectTab() {
+    if (!this.currentConnection) return;
+    
     // Mark as manual disconnect to prevent reconnection attempts
-    const connection = this.activeConnections.get(tabId);
-    if (connection) {
-      connection.isManualDisconnect = true;
-    }
+    this.currentConnection.isManualDisconnect = true;
     
     // Clear reconnection attempts
-    this.reconnectAttempts.delete(tabId);
+    this.reconnectAttempts = 0;
     
-    await this.cleanupConnection(tabId);
+    const tabId = this.currentTabId;
+    await this.cleanupConnection(true);
 
-    // Update UI
-    chrome.action.setBadgeText({ tabId, text: '' });
-    chrome.action.setTitle({ tabId, title: 'Share tab with Playwright MCP' });
-
+    this.setConnectionState('disconnected');
     debugLog(`Tab ${tabId} disconnected`);
   }
   /**
    * Clean up connection resources
-   * @param {number} tabId
-   * @param {boolean} clearReconnectAttempts - Whether to clear reconnection attempts (default: true)
+   * @param {boolean} clearTabState - Whether to clear current tab state (default: true)
    */
-  async cleanupConnection(tabId, clearReconnectAttempts = true) {
-    const connection = this.activeConnections.get(tabId);
-    if (!connection) return;
+  async cleanupConnection(clearTabState = true) {
+    if (!this.currentConnection) return;
+
+    const connection = this.currentConnection;
 
     // Remove listeners
     if (connection.eventListener) {
@@ -545,11 +816,15 @@ class TabShareExtension {
       this.isAttached = false;
     }
 
-    this.activeConnections.delete(tabId);
-    
-    // Clear reconnection attempts if requested
-    if (clearReconnectAttempts) {
-      this.reconnectAttempts.delete(tabId);
+    // Clear current connection and tab state if requested
+    if (clearTabState) {
+      this.currentConnection = null;
+      this.currentTabId = null;
+      this.reconnectAttempts = 0;
+      this.lastHeartbeat = null;
+    } else {
+      // Just clear the connection object but keep tab reference for reconnection
+      this.currentConnection = null;
     }
   }
   /**
@@ -557,10 +832,34 @@ class TabShareExtension {
    * @param {number} tabId
    */
   async onTabRemoved(tabId) {
-    if (this.activeConnections.has(tabId)) {
-      // Clear reconnection attempts
-      this.reconnectAttempts.delete(tabId);
-      await this.cleanupConnection(tabId);
+    // If the removed tab is our current connection, clean up
+    if (this.currentTabId === tabId) {
+      debugLog(`Current connected tab ${tabId} was removed`);
+      await this.cleanupConnection(true);
+      this.setConnectionState('disconnected');
+    }
+  }
+
+  /**
+   * Handle extension startup (browser restart)
+   */
+  async onExtensionStartup() {
+    debugLog('Extension startup detected');
+    // Wait for device initialization and then auto-connect
+    if (this.deviceId && this.autoConnectEnabled) {
+      await this.initAutoConnect();
+    }
+  }
+
+  /**
+   * Handle extension installation/update
+   */
+  async onExtensionInstalled(details) {
+    debugLog('Extension installed/updated:', details.reason);
+    // For new installs or updates, ensure we're ready to auto-connect
+    if (details.reason === 'install' || details.reason === 'update') {
+      // Device will be initialized in constructor, then auto-connect will trigger
+      debugLog('Extension ready for auto-connection');
     }
   }
 }
