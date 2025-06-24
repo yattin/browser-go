@@ -26,4 +26,5 @@ test-*.png
 *.tgz
 
 .vscode
+.runtime
 

@@ -45,6 +45,8 @@ The application consists of several modular components:
 - **Run Tests**: Two core test suites available:
   - `pnpm run test:bridge` - Test CDP bridge functionality (unit test)
   - `pnpm run test:e2e:script` - Complete end-to-end test with real Chrome and extension
+- **Manual Testing Environment**: Quick manual testing setup:
+  - `pnpm run open:browser` - Launch Chrome with extension loaded for manual testing
 - **Start Application**: `pnpm run start`
   - This command executes the compiled main application script at `dist/cli.js`.
   - Alternatively, after building: `node dist/cli.js [options]`
@@ -104,6 +106,35 @@ Launch parameters (`launch`) are JSON-formatted and include:
 - **User Data Directories**: Located at `~/.browser-go/browser_data/<user_id>/`
 - **Automatic Cleanup**: Inactive instances are cleaned up based on configurable timeout (default: 60 minutes)
 - **Concurrent Limits**: Configurable maximum concurrent instances (default: 10)
+
+## Manual Testing Environment
+
+The project provides a dedicated script for quick manual testing of the Chrome extension and CDP bridge functionality:
+
+### Browser Launcher (`src/open-browser.ts`)
+- **Purpose**: Launches Chrome with the extension pre-loaded for manual testing
+- **Command**: `pnpm run open:browser`
+- **Features**:
+  - Automatically loads the project extension from `extension/` directory
+  - Creates isolated user data directory at `.runtime/` for testing
+  - Starts with extension management page for easy extension status verification
+  - Supports graceful shutdown with Ctrl+C
+  - Provides helpful testing guidance in console output
+
+### Usage Workflow
+1. Run `pnpm run open:browser` to launch the testing environment
+2. Browser opens with extension loaded and extension management page displayed
+3. Verify extension is active and enabled
+4. Optionally start the browser-go server in another terminal: `pnpm run start`
+5. Extension will automatically connect to localhost:3000 if server is running
+6. Navigate to any website for manual testing of extension functionality
+7. Press Ctrl+C to gracefully shutdown the testing environment
+
+This tool is ideal for:
+- Quick verification of extension functionality
+- Manual testing of CDP bridge features
+- Extension development and debugging
+- Reproducing user-reported issues in a controlled environment
 
 ## Chrome Extension Integration
 

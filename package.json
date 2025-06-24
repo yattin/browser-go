@@ -12,6 +12,7 @@
     "start": "node dist/cli.js",
     "test:bridge": "node dist/test-bridge.js",
     "test:e2e:script": "scripts/run-e2e-test.sh",
+    "open:browser": "pnpm run build && node dist/open-browser.js",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "build:bundle": "vite build",

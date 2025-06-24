@@ -14,8 +14,8 @@ export function parseSimpleYaml(content: string): any {
     const lines = content.split('\n');
     const result: any = {};
     let currentPath: any = result;
-    let indentStack: any[] = [result];
-    let indentLevels: number[] = [0];
+    const indentStack: any[] = [result];
+    const indentLevels: number[] = [0];
 
     for (const line of lines) {
       if (line.trim() === '' || line.trim().startsWith('#')) continue;
@@ -80,7 +80,7 @@ export function loadOpenApiSpec(): any {
       : fs.readFileSync('./openapi.yaml', 'utf8');
     
     return parseSimpleYaml(yamlContent);
-  } catch (error) {
+  } catch {
     // 如果加载失败，记录警告并提示只显示空白接口文档
     logger.warn('Failed to load OpenAPI specification from openapi.yaml, using default empty spec.');
     return createDefaultOpenApiSpec();
