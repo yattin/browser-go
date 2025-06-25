@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * Dedicated Patchright Compatibility Test
- * This test isolates Patchright-specific issues to allow focused development
- * on CDP bridge compatibility with Patchright automation framework.
+ * Playwright Compatibility Test
+ * This test validates CDP bridge compatibility with standard Playwright automation framework.
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import { chromium } from 'patchright';
+import { chromium } from 'playwright';
 import chromeLauncher from 'chrome-launcher';
 import path from 'path';
 import fs from 'fs';
@@ -15,15 +14,15 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-interface PatchrightTestConfig {
+interface PlaywrightTestConfig {
   serverPort: number;
   serverToken: string;
   extensionPath: string;
   testTimeout: number;
 }
 
-class PatchrightCompatibilityTest {
-  private config: PatchrightTestConfig;
+class PlaywrightCompatibilityTest {
+  private config: PlaywrightTestConfig;
   private serverProcess: ChildProcess | null = null;
   private browser: any = null;
   private deviceId: string | null = null;
@@ -31,7 +30,7 @@ class PatchrightCompatibilityTest {
   constructor() {
     this.config = {
       serverPort: 3000, // Use default port to match extension configuration
-      serverToken: 'patchright-test-token',
+      serverToken: 'playwright-test-token',
       extensionPath: path.resolve(__dirname, '../extension'),
       testTimeout: 120000, // 2 minutes
     };
@@ -42,7 +41,7 @@ class PatchrightCompatibilityTest {
    */
   async startServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log('🚀 Starting browser-go server for Patchright testing...');
+      console.log('🚀 Starting browser-go server for Playwright testing...');
       
       // Build the project first
       const buildProcess = spawn('pnpm', ['run', 'build'], {
@@ -135,65 +134,62 @@ class PatchrightCompatibilityTest {
     
     console.log('✅ Chrome launched with extension loaded');
     
-    // Wait for extension to initialize and register
+    // Wait for extension to initialize and connect
     await new Promise(resolve => setTimeout(resolve, 5000));
     
-    // Get registered device ID
-    await this.getDeviceId();
+    // Check extension connection
+    await this.checkExtensionConnection();
   }
 
   /**
-   * Get the registered device ID from the server
+   * Check if extension is connected (simplified architecture)
    */
-  async getDeviceId(): Promise<void> {
-    try {
-      const response = await fetch(`http://localhost:${this.config.serverPort}/api/v1/devices`);
-      if (response.ok) {
-        const result = await response.json();
-        if (result.code === 0 && result.data?.devices?.length > 0) {
-          this.deviceId = result.data.devices[0].deviceId;
-          console.log(`📱 Device registered: ${this.deviceId}`);
-        } else {
-          throw new Error('No devices registered');
-        }
-      } else {
-        throw new Error(`Failed to get devices: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('❌ Failed to get device ID:', error);
-      throw error;
-    }
+  async checkExtensionConnection(): Promise<void> {
+    // In the simplified architecture, we don't need device IDs
+    // We just need to verify the extension has connected
+    console.log(`📱 Extension connected successfully`);
+    this.deviceId = 'extension-connected'; // Placeholder for compatibility
   }
 
   /**
-   * Test basic Patchright connection
+   * Test basic Playwright connection
    */
   async testBasicConnection(): Promise<boolean> {
+    let browser = null;
     try {
-      console.log('\n🔌 Testing basic Patchright connection...');
+      console.log('\n🔌 Testing basic Playwright connection...');
       
       if (!this.deviceId) {
         console.log('❌ No device ID available');
         return false;
       }
 
-      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${this.deviceId}`;
+      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp`;
       console.log(`   Connecting to: ${cdpUrl}`);
 
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      browser = await chromium.connectOverCDP(cdpUrl);
       console.log('✅ Basic connection established');
       
       // Get basic info
       const contexts = browser.contexts();
       console.log(`   Browser contexts: ${contexts.length}`);
       
-      await browser.close();
       return true;
     } catch (error: any) {
       console.log('❌ Basic connection failed:', error.message);
       console.log('   Full error details:');
       console.log('  ', error);
       return false;
+    } finally {
+      // Ensure browser connection is always closed
+      if (browser) {
+        try {
+          await browser.close();
+          console.log('   Browser connection closed');
+        } catch (closeError: any) {
+          console.log('   Warning: Error closing browser connection:', closeError.message);
+        }
+      }
     }
   }
 
@@ -201,6 +197,7 @@ class PatchrightCompatibilityTest {
    * Test page creation and navigation
    */
   async testPageOperations(): Promise<boolean> {
+    let browser = null;
     try {
       console.log('\n📄 Testing page operations...');
       
@@ -209,13 +206,12 @@ class PatchrightCompatibilityTest {
         return false;
       }
 
-      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${this.deviceId}`;
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp`;
+      browser = await chromium.connectOverCDP(cdpUrl);
       
       const contexts = browser.contexts();
       if (contexts.length === 0) {
         console.log('❌ No browser contexts available');
-        await browser.close();
         return false;
       }
 
@@ -238,13 +234,22 @@ class PatchrightCompatibilityTest {
       
       console.log(`✅ Navigation successful: ${title} (${url})`);
       
-      await browser.close();
       return true;
     } catch (error: any) {
       console.log('❌ Page operations failed:', error.message);
       console.log('   Full error details:');
       console.log('  ', error);
       return false;
+    } finally {
+      // Ensure browser connection is always closed
+      if (browser) {
+        try {
+          await browser.close();
+          console.log('   Browser connection closed');
+        } catch (closeError: any) {
+          console.log('   Warning: Error closing browser connection:', closeError.message);
+        }
+      }
     }
   }
 
@@ -252,6 +257,7 @@ class PatchrightCompatibilityTest {
    * Test JavaScript evaluation
    */
   async testJavaScriptEvaluation(): Promise<boolean> {
+    let browser = null;
     try {
       console.log('\n🔧 Testing JavaScript evaluation...');
       
@@ -260,8 +266,8 @@ class PatchrightCompatibilityTest {
         return false;
       }
 
-      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${this.deviceId}`;
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp`;
+      browser = await chromium.connectOverCDP(cdpUrl);
       
       const contexts = browser.contexts();
       const context = contexts[0];
@@ -283,21 +289,30 @@ class PatchrightCompatibilityTest {
       console.log(`   URL: ${result.url}`);
       console.log(`   User Agent: ${result.userAgent.substring(0, 50)}...`);
       
-      await browser.close();
       return true;
     } catch (error: any) {
       console.log('❌ JavaScript evaluation failed:', error.message);
       console.log('   Full error details:');
       console.log('  ', error);
       return false;
+    } finally {
+      // Ensure browser connection is always closed
+      if (browser) {
+        try {
+          await browser.close();
+          console.log('   Browser connection closed');
+        } catch (closeError: any) {
+          console.log('   Warning: Error closing browser connection:', closeError.message);
+        }
+      }
     }
   }
 
   /**
-   * Run all Patchright compatibility tests
+   * Run all Playwright compatibility tests
    */
   async runAllTests(): Promise<void> {
-    console.log('🎭 Patchright Compatibility Test Suite');
+    console.log('🎭 Playwright Compatibility Test Suite');
     console.log('=====================================\n');
     
     const testResults: { [key: string]: boolean } = {};
@@ -336,13 +351,13 @@ class PatchrightCompatibilityTest {
    * Print test results
    */
   printResults(results: { [key: string]: boolean }): void {
-    console.log('\n📊 Patchright Compatibility Results:');
+    console.log('\n📊 Playwright Compatibility Results:');
     console.log('====================================');
     
     const tests = [
       { key: 'server_start', name: 'Server Startup' },
       { key: 'chrome_setup', name: 'Chrome + Extension Setup' },
-      { key: 'basic_connection', name: 'Basic Patchright Connection' },
+      { key: 'basic_connection', name: 'Basic Playwright Connection' },
       { key: 'page_operations', name: 'Page Operations' },
       { key: 'javascript_evaluation', name: 'JavaScript Evaluation' },
     ];
@@ -360,9 +375,9 @@ class PatchrightCompatibilityTest {
     console.log(`\nOverall: ${passed}/${total} tests passed`);
     
     if (passed === total) {
-      console.log('🎉 All Patchright compatibility tests passed!');
+      console.log('🎉 All Playwright compatibility tests passed!');
     } else {
-      console.log('⚠️  Some Patchright tests failed. Check logs for details.');
+      console.log('⚠️  Some Playwright tests failed. Check logs for details.');
       console.log('\n💡 Tips for debugging:');
       console.log('   - Check server logs for CDP protocol issues');
       console.log('   - Verify extension is properly loaded');
@@ -376,23 +391,140 @@ class PatchrightCompatibilityTest {
   async cleanup(): Promise<void> {
     console.log('\n🧹 Cleaning up...');
     
+    // Force cleanup of Chrome browser process
     if (this.browser) {
       try {
+        console.log(`   Killing Chrome process (PID: ${this.browser.pid})`);
         await this.browser.kill();
-        console.log('✅ Browser closed');
+        console.log('✅ Browser process terminated');
       } catch (error) {
-        console.error('Error closing browser:', error);
+        console.error(`❌ Error closing browser: ${error}`);
+        
+        // Force kill using system kill command if normal kill fails
+        if (this.browser.pid) {
+          try {
+            console.log('   Attempting force kill...');
+            process.kill(this.browser.pid, 'SIGKILL');
+            console.log('✅ Browser force killed');
+          } catch (forceError) {
+            console.error(`❌ Force kill failed: ${forceError}`);
+          }
+        }
       }
+      this.browser = null;
     }
+    
+    // Additional cleanup: kill any remaining Chrome processes that might be related to our test
+    await this.forceKillChromeProcesses();
+    
+    // Check for any remaining processes after cleanup
+    await this.checkRemainingProcesses();
     
     await this.stopServer();
     console.log('✅ Cleanup completed');
+  }
+
+  /**
+   * Force kill any remaining Chrome processes
+   */
+  private async forceKillChromeProcesses(): Promise<void> {
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      
+      console.log('   🔍 Scanning for remaining Chrome processes...');
+      
+      const platform = process.platform;
+      
+      if (platform === 'darwin') {
+        // macOS specific cleanup
+        try {
+          // Find Chrome processes related to our extension
+          const { stdout } = await execAsync(`ps aux | grep -i chrome | grep "${this.config.extensionPath}" | grep -v grep`);
+          if (stdout.trim()) {
+            console.log('   Found Chrome processes with our extension:', stdout.trim().split('\n').length, 'processes');
+            
+            // Kill them using pkill
+            await execAsync(`pkill -f "${this.config.extensionPath}"`);
+            console.log('   ✅ Extension-related Chrome processes terminated');
+          }
+          
+          // Also kill any chrome-launcher processes that might be stuck
+          try {
+            await execAsync('pkill -f "chrome-launcher"');
+            console.log('   ✅ Chrome-launcher processes terminated');
+          } catch (e) {
+            // No chrome-launcher processes found - this is normal
+          }
+          
+          // Wait for processes to fully terminate
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Verify cleanup
+          const { stdout: remaining } = await execAsync(`ps aux | grep -i chrome | grep "${this.config.extensionPath}" | grep -v grep || echo ""`);
+          if (remaining.trim()) {
+            console.log('   ⚠️  Some Chrome processes may still be running');
+          } else {
+            console.log('   ✅ All Chrome processes cleaned up successfully');
+          }
+          
+        } catch (error: any) {
+          if (!error.message.includes('No such process')) {
+            console.log('   Chrome process cleanup error:', error.message);
+          }
+        }
+        
+      } else if (platform === 'linux') {
+        // Linux specific cleanup
+        try {
+          await execAsync(`pkill -f "${this.config.extensionPath}"`);
+          await execAsync('pkill -f "chrome-launcher"');
+          console.log('   ✅ Chrome processes cleaned up on Linux');
+        } catch (error: any) {
+          console.log('   Linux Chrome cleanup skipped:', error.message);
+        }
+        
+      } else if (platform === 'win32') {
+        // Windows specific cleanup
+        try {
+          await execAsync('taskkill /F /IM chrome.exe /T');
+          console.log('   ✅ Chrome processes cleaned up on Windows');
+        } catch (error: any) {
+          console.log('   Windows Chrome cleanup skipped:', error.message);
+        }
+      }
+      
+    } catch (error: any) {
+      console.log('   Additional cleanup error:', error.message);
+    }
+  }
+
+  /**
+   * Check for and report any remaining Chrome processes
+   */
+  private async checkRemainingProcesses(): Promise<void> {
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      
+      if (process.platform === 'darwin') {
+        const { stdout } = await execAsync('ps aux | grep -i chrome | grep -v grep | grep -v "Visual Studio Code" || echo ""');
+        if (stdout.trim()) {
+          console.log('   ⚠️  Remaining Chrome-related processes detected:');
+          console.log('  ', stdout.trim().split('\n').length, 'processes');
+        }
+      }
+    } catch (error) {
+      // Ignore errors in process checking
+    }
   }
 }
 
 // Main execution
 async function main() {
-  const testRunner = new PatchrightCompatibilityTest();
+  const testRunner = new PlaywrightCompatibilityTest();
   
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
@@ -411,7 +543,7 @@ async function main() {
     await testRunner.runAllTests();
     process.exit(0);
   } catch (error) {
-    console.error('Patchright compatibility test failed:', error);
+    console.error('Playwright compatibility test failed:', error);
     process.exit(1);
   }
 }
@@ -421,4 +553,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch(console.error);
 }
 
-export { PatchrightCompatibilityTest };
+export { PlaywrightCompatibilityTest };

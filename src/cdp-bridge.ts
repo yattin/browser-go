@@ -1,7 +1,7 @@
 /**
  * CDP Relay Bridge for Extension connections
+ * Simplified implementation based on Microsoft's playwright-mcp architecture
  * Handles bidirectional message bridging between CDP clients and Chrome extensions
- * with device-based routing support
  */
 
 import WebSocket from 'ws';
@@ -9,14 +9,15 @@ import { logger } from './logger.js';
 import { DeviceManager } from './device-manager.js';
 import { AppConfig } from './types.js';
 
-interface CDPConnection {
-  socket: WebSocket;
-  deviceId?: string;
-  connectedAt: Date;
+interface ConnectionInfo {
+  targetInfo: any;
+  sessionId: string;
 }
 
 export class CDPRelayBridge {
-  private cdpConnections: Map<WebSocket, CDPConnection> = new Map();
+  private playwrightSocket: WebSocket | null = null;
+  private extensionSocket: WebSocket | null = null;
+  private connectionInfo: ConnectionInfo | undefined;
   private deviceManager: DeviceManager;
   private config: AppConfig;
 
@@ -26,46 +27,36 @@ export class CDPRelayBridge {
   }
 
   /**
-   * Handle CDP client connections (e.g., Playwright MCP)
+   * Handle CDP client connections (Playwright)
    */
   handleCDPConnection(ws: WebSocket, deviceId?: string): void {
-    const connection: CDPConnection = {
-      socket: ws,
-      deviceId,
-      connectedAt: new Date(),
-    };
-
-    this.cdpConnections.set(ws, connection);
-    
-    if (deviceId) {
-      logger.info(`CDP client connected with device routing: ${deviceId}`);
-      
-      // Check if target device is connected
-      if (!this.deviceManager.isDeviceConnected(deviceId)) {
-        logger.warn(`Target device not connected: ${deviceId}`);
-        ws.close(1002, `Target device not connected: ${deviceId}`);
-        return;
-      }
-    } else {
-      logger.info('CDP client connected without device routing');
+    // Close previous connection if exists
+    if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
+      logger.info('Closing previous Playwright connection');
+      this.playwrightSocket.close(1000, 'New connection established');
     }
+
+    this.playwrightSocket = ws;
+    logger.info('Playwright connected');
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data.toString());
-        this._handleCDPMessage(ws, message);
+        this._handlePlaywrightMessage(message);
       } catch (error) {
-        logger.error('Error parsing CDP message:', error);
+        logger.error('Error parsing Playwright message:', error);
       }
     });
 
     ws.on('close', () => {
-      this.cdpConnections.delete(ws);
-      logger.info(`CDP client disconnected${deviceId ? ` (device: ${deviceId})` : ''}`);
+      if (this.playwrightSocket === ws) {
+        this.playwrightSocket = null;
+      }
+      logger.info('Playwright disconnected');
     });
 
     ws.on('error', (error) => {
-      logger.error('CDP WebSocket error:', error);
+      logger.error('Playwright WebSocket error:', error);
     });
   }
 
@@ -73,18 +64,28 @@ export class CDPRelayBridge {
    * Handle Chrome extension connections
    */
   handleExtensionConnection(ws: WebSocket): void {
-    logger.info('Extension connection attempt');
+    // Close previous connection if exists
+    if (this.extensionSocket?.readyState === WebSocket.OPEN) {
+      logger.info('Closing previous extension connection');
+      this.extensionSocket.close(1000, 'New connection established');
+    }
+
+    this.extensionSocket = ws;
+    logger.info('Extension connected');
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data.toString());
-        this._handleExtensionMessage(ws, message);
+        this._handleExtensionMessage(message);
       } catch (error) {
         logger.error('Error parsing extension message:', error);
       }
     });
 
     ws.on('close', () => {
+      if (this.extensionSocket === ws) {
+        this.extensionSocket = null;
+      }
       logger.info('Extension disconnected');
     });
 
@@ -140,136 +141,55 @@ export class CDPRelayBridge {
   }
 
   /**
-   * Handle messages from CDP clients
+   * Handle messages from Playwright
    */
-  private _handleCDPMessage(cdpSocket: WebSocket, message: any): void {
-    const connection = this.cdpConnections.get(cdpSocket);
-    if (!connection) {
-      logger.error('CDP message from unknown connection');
-      return;
-    }
-
-    const deviceId = connection.deviceId || 'none';
-    this._logCDPProtocol('←', 'CDP Client', `Bridge(${deviceId})`, message);
+  private _handlePlaywrightMessage(message: any): void {
+    this._logCDPProtocol('←', 'Playwright', 'Bridge', message);
 
     // Handle Browser domain methods locally
     if (message.method?.startsWith('Browser.')) {
-      this._handleBrowserDomainMethod(cdpSocket, message);
+      this._handleBrowserDomainMethod(message);
       return;
     }
 
-    // Handle Target domain methods
+    // Handle Target domain methods locally
     if (message.method?.startsWith('Target.')) {
-      this._handleTargetDomainMethod(cdpSocket, message);
-      return;
-    }
-
-    // Handle Page domain methods locally for Patchright compatibility
-    if (message.method?.startsWith('Page.') && this._shouldHandlePageMethodLocally(message.method)) {
-      this._handlePageDomainMethod(cdpSocket, message);
+      this._handleTargetDomainMethod(message);
       return;
     }
 
     // Forward other commands to extension
     if (message.method) {
-      this._forwardToExtension(cdpSocket, message);
+      this._forwardToExtension(message);
     }
   }
 
   /**
    * Handle messages from Chrome extensions
    */
-  private _handleExtensionMessage(extensionSocket: WebSocket, message: any): void {
-    // Handle device registration
-    if (message.type === 'device_register') {
-      this.deviceManager.registerDevice(
-        message.deviceId,
-        message.deviceInfo,
-        extensionSocket
-      );
-      return;
-    }
-
+  private _handleExtensionMessage(message: any): void {
     // Handle connection info from extension
     if (message.type === 'connection_info') {
       logger.info('← Extension connected to tab:', message);
-      
-      if (message.deviceId) {
-        this.deviceManager.updateDeviceConnectionInfo(message.deviceId, {
-          sessionId: message.sessionId,
-          targetInfo: message.targetInfo
-        });
-      }
+      this.connectionInfo = {
+        targetInfo: message.targetInfo,
+        sessionId: message.sessionId
+      };
       return;
     }
 
-    // Handle ping messages (heartbeat)
-    if (message.type === 'ping') {
-      logger.debug(`← Extension heartbeat from device: ${message.deviceId}`);
-      
-      // Update device last seen time
-      if (message.deviceId) {
-        const device = this.deviceManager.getDevice(message.deviceId);
-        if (device) {
-          device.lastSeen = new Date();
-        }
-      }
-      
-      // Send pong response
-      extensionSocket.send(JSON.stringify({
-        type: 'pong',
-        deviceId: message.deviceId,
-        timestamp: Date.now()
-      }));
-      return;
-    }
-
-    // Find the device ID for this extension
-    let deviceId: string | null = null;
-    const devices = this.deviceManager.getAllDevices();
-    for (const device of devices) {
-      if (device.extensionSocket === extensionSocket) {
-        deviceId = device.deviceId;
-        break;
-      }
-    }
-
-    // Log the extension message using detailed protocol logging
-    this._logCDPProtocol('←', `Extension(${deviceId || 'unknown'})`, 'Bridge', message);
-    
-    // Handle error responses specially
-    if (message.error) {
-      if (message.error.code === -32000) {
-        logger.warn(`← Extension reported error -32000: ${message.error.message}`);
-        
-        // For standalone API errors, provide additional context
-        if (!message.id && message.error.message.includes('debugger.sendCommand')) {
-          logger.error('Chrome Extension API error: debugger.sendCommand parameter signature mismatch');
-          logger.error('This usually indicates incorrect parameter types or missing debugger attachment');
-        }
-      } else {
-        logger.warn(`← Extension reported error ${message.error.code}: ${message.error.message}`);
-      }
-    }
-    
-    // Handle message forwarding based on type
-    if (message.error && !message.id) {
-      // Standalone error messages are not forwarded to CDP clients
-      // as they don't correspond to any specific request
-      logger.info('Standalone error message not forwarded to CDP clients');
-      return;
-    }
-    
-    this._forwardToCDPClients(extensionSocket, message);
+    // CDP event from extension
+    this._logCDPProtocol('←', 'Extension', 'Bridge', message);
+    this._sendToPlaywright(message);
   }
 
   /**
    * Handle Browser domain methods locally
    */
-  private _handleBrowserDomainMethod(cdpSocket: WebSocket, message: any): void {
+  private _handleBrowserDomainMethod(message: any): void {
     switch (message.method) {
       case 'Browser.getVersion':
-        this._sendToCDP(cdpSocket, {
+        this._sendToPlaywright({
           id: message.id,
           result: {
             protocolVersion: '1.3',
@@ -280,236 +200,91 @@ export class CDPRelayBridge {
         break;
 
       case 'Browser.setDownloadBehavior':
-        this._sendToCDP(cdpSocket, {
+        this._sendToPlaywright({
           id: message.id,
           result: {}
         });
         break;
 
       default:
-        this._forwardToExtension(cdpSocket, message);
+        this._forwardToExtension(message);
     }
   }
 
-  /**
-   * Check if Page method should be handled locally for Patchright compatibility
-   */
-  private _shouldHandlePageMethodLocally(method: string): boolean {
-    const localPageMethods = [
-      'Page.getFrameTree'  // Critical for Patchright frame management
-    ];
-    return localPageMethods.includes(method);
-  }
-
-  /**
-   * Handle critical Page domain methods locally for Patchright compatibility
-   */
-  private _handlePageDomainMethod(cdpSocket: WebSocket, message: any): void {
-    const connection = this.cdpConnections.get(cdpSocket);
-    if (!connection) return;
-
-    switch (message.method) {
-      case 'Page.getFrameTree': {
-        const device = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
-        const connectionInfo = device?.connectionInfo;
-        
-        if (connectionInfo) {
-          // Provide a stable frame tree structure for Patchright
-          const frameUrl = connectionInfo.targetInfo.url || 'about:blank';
-          let securityOrigin = 'null';
-          let domainAndRegistry = '';
-          let secureContextType = 'Insecure';
-          
-          try {
-            if (frameUrl !== 'about:blank' && frameUrl.startsWith('http')) {
-              const url = new URL(frameUrl);
-              securityOrigin = url.origin;
-              domainAndRegistry = url.hostname;
-              secureContextType = frameUrl.startsWith('https') ? 'Secure' : 'Insecure';
-            }
-          } catch (error) {
-            // Fallback to default values for invalid URLs
-            securityOrigin = 'null';
-            domainAndRegistry = '';
-            secureContextType = 'Insecure';
-          }
-          
-          this._sendToCDP(cdpSocket, {
-            id: message.id,
-            result: {
-              frameTree: {
-                frame: {
-                  id: connectionInfo.targetInfo.targetId,
-                  loaderId: connectionInfo.targetInfo.targetId + '_loader',
-                  url: frameUrl,
-                  domainAndRegistry: domainAndRegistry,
-                  securityOrigin: securityOrigin,
-                  mimeType: 'text/html',
-                  secureContextType: secureContextType,
-                  crossOriginIsolatedContextType: 'NotIsolated',
-                  gatedAPIFeatures: []
-                },
-                childFrames: []
-              }
-            }
-          });
-        } else {
-          // Fallback: forward to extension
-          this._forwardToExtension(cdpSocket, message);
-        }
-        break;
-      }
-
-      default:
-        // For other Page methods, forward to extension
-        this._forwardToExtension(cdpSocket, message);
-    }
-  }
 
   /**
    * Handle Target domain methods locally
    */
-  private _handleTargetDomainMethod(cdpSocket: WebSocket, message: any): void {
-    const connection = this.cdpConnections.get(cdpSocket);
-    if (!connection) return;
-
+  private _handleTargetDomainMethod(message: any): void {
     switch (message.method) {
-      case 'Target.setAutoAttach': {
-        // Get device connection info for auto-attach simulation
-        const device = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
-        const connectionInfo = device?.connectionInfo;
-        
-        if (connectionInfo && !message.sessionId) {
-          // Simulate auto-attach behavior only for main target (no sessionId)
-          // This matches Microsoft's playwright-mcp implementation
-          logger.info('Simulating auto-attach for main target');
-          
-          // First send the Target.attachedToTarget event
-          this._sendToCDP(cdpSocket, {
+      case 'Target.setAutoAttach':
+        // Simulate auto-attach behavior with real target info
+        if (this.connectionInfo && !message.sessionId) {
+          logger.info('Simulating auto-attach for target:', JSON.stringify(message));
+          this._sendToPlaywright({
             method: 'Target.attachedToTarget',
             params: {
-              sessionId: connectionInfo.sessionId,
+              sessionId: this.connectionInfo.sessionId,
               targetInfo: {
-                ...connectionInfo.targetInfo,
+                ...this.connectionInfo.targetInfo,
                 attached: true,
               },
               waitingForDebugger: false
             }
           });
-          
-          // Then send the success response
-          this._sendToCDP(cdpSocket, {
+          this._sendToPlaywright({
             id: message.id,
             result: {}
           });
         } else {
-          // For session-specific auto-attach or when no connection info, forward to extension
-          this._forwardToExtension(cdpSocket, message);
+          this._forwardToExtension(message);
         }
         break;
-      }
 
-      case 'Target.getTargets': {
+      case 'Target.getTargets':
         const targetInfos = [];
-        const deviceInfo = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
-        
-        if (deviceInfo?.connectionInfo) {
+        if (this.connectionInfo) {
           targetInfos.push({
-            ...deviceInfo.connectionInfo.targetInfo,
+            ...this.connectionInfo.targetInfo,
             attached: true,
           });
         }
-
-        this._sendToCDP(cdpSocket, {
+        this._sendToPlaywright({
           id: message.id,
           result: { targetInfos }
         });
         break;
-      }
 
       default:
-        this._forwardToExtension(cdpSocket, message);
+        this._forwardToExtension(message);
     }
   }
 
   /**
    * Forward message to Chrome extension
    */
-  private _forwardToExtension(cdpSocket: WebSocket, message: any): void {
-    const connection = this.cdpConnections.get(cdpSocket);
-    if (!connection) return;
-
-    const deviceSocket = connection.deviceId 
-      ? this.deviceManager.getDeviceSocket(connection.deviceId)
-      : null;
-
-    if (deviceSocket) {
-      this._logCDPProtocol('→', `Bridge(${connection.deviceId})`, `Extension(${connection.deviceId})`, message);
-      deviceSocket.send(JSON.stringify(message));
+  private _forwardToExtension(message: any): void {
+    if (this.extensionSocket?.readyState === WebSocket.OPEN) {
+      this._logCDPProtocol('→', 'Bridge', 'Extension', message);
+      this.extensionSocket.send(JSON.stringify(message));
     } else {
-      logger.info(`Extension not connected for device: ${connection.deviceId || 'none'}`);
+      logger.info('Extension not connected, cannot forward message');
       if (message.id) {
-        const errorResponse = {
+        this._sendToPlaywright({
           id: message.id,
-          error: { message: `Extension not connected for device: ${connection.deviceId || 'none'}` }
-        };
-        this._sendToCDP(cdpSocket, errorResponse);
+          error: { message: 'Extension not connected' }
+        });
       }
     }
   }
 
   /**
-   * Forward message to relevant CDP clients
+   * Forward message to Playwright
    */
-  private _forwardToCDPClients(extensionSocket: WebSocket, message: any): void {
-    // Find the device ID for this extension socket
-    let deviceId: string | null = null;
-    const devices = this.deviceManager.getAllDevices();
-    for (const device of devices) {
-      if (device.extensionSocket === extensionSocket) {
-        deviceId = device.deviceId;
-        break;
-      }
-    }
-
-    if (!deviceId) {
-      logger.warn('Cannot forward message: device ID not found for extension socket');
-      return;
-    }
-
-    // Forward to CDP connections for this device
-    let forwarded = false;
-    for (const [cdpSocket, connection] of this.cdpConnections.entries()) {
-      logger.debug(`Checking message to CDP client for device: ${connection.deviceId}`);
-      if (connection.deviceId === deviceId) {
-        if (cdpSocket.readyState === WebSocket.OPEN) {
-          try {
-            this._logCDPProtocol('→', `Bridge(${deviceId})`, `CDP Client(${deviceId})`, message);
-            cdpSocket.send(JSON.stringify(message));
-            forwarded = true;
-          } catch (error) {
-            logger.error(`Failed to forward message to CDP client: ${error}`);
-          }
-        } else {
-          logger.warn(`CDP client socket is not open for device: ${deviceId}`);
-        }
-      }
-    }
-
-    if (!forwarded) {
-      logger.warn(`No active CDP connections found for device: ${deviceId}`);
-    }
-  }
-
-  /**
-   * Send message to specific CDP client
-   */
-  private _sendToCDP(cdpSocket: WebSocket, message: any): void {
-    if (cdpSocket.readyState === WebSocket.OPEN) {
-      const connection = this.cdpConnections.get(cdpSocket);
-      const deviceId = connection?.deviceId || 'none';
-      this._logCDPProtocol('→', `Bridge(${deviceId})`, `CDP Client(${deviceId})`, message);
-      cdpSocket.send(JSON.stringify(message));
+  private _sendToPlaywright(message: any): void {
+    if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
+      this._logCDPProtocol('→', 'Bridge', 'Playwright', message);
+      this.playwrightSocket.send(JSON.stringify(message));
     }
   }
 
@@ -517,12 +292,12 @@ export class CDPRelayBridge {
    * Get connection statistics
    */
   getStats(): {
-    cdpConnections: number;
-    deviceConnections: number;
+    playwrightConnected: boolean;
+    extensionConnected: boolean;
   } {
     return {
-      cdpConnections: this.cdpConnections.size,
-      deviceConnections: this.deviceManager.getDeviceStats().connectedDevices,
+      playwrightConnected: this.playwrightSocket?.readyState === WebSocket.OPEN,
+      extensionConnected: this.extensionSocket?.readyState === WebSocket.OPEN,
     };
   }
 }

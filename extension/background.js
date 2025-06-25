@@ -436,22 +436,16 @@ class TabShareExtension {
       
       this.setConnectionState('connecting');
 
-      // Prepare debuggee but don't attach yet (lazy attach)
+      // Attach chrome debugger immediately (like Microsoft's implementation)
       const debuggee = { tabId };
+      await chrome.debugger.attach(debuggee, '1.3');
+
+      if (chrome.runtime.lastError)
+        throw new Error(chrome.runtime.lastError.message);
       
-      // Get tab info without attaching debugger
-      const tab = await chrome.tabs.get(tabId);
-      const targetInfo = {
-        targetInfo: {
-          targetId: `tab-${tabId}`,
-          type: 'page',
-          title: tab.title,
-          url: tab.url,
-          attached: false, // Will be true after lazy attach
-          canAccessOpener: false,
-          browserContextId: `context-${tabId}`
-        }
-      };
+      // Get target info after attaching
+      const targetInfo = await chrome.debugger.sendCommand(debuggee, 'Target.getTargetInfo');
+      debugLog('Target info:', targetInfo);
 
       // Connect to bridge server
       const socket = new WebSocket(bridgeUrl);
@@ -464,26 +458,19 @@ class TabShareExtension {
         isManualDisconnect: false // 标记是否为手动断开
       };
 
+      // Set up message handling IMMEDIATELY after creating the connection
+      // This ensures no messages are lost during the connection setup process
+      debugLog('>>> Setting up message handling for connection, tabId:', tabId);
+      this.setupMessageHandling(connection);
+      debugLog('>>> Message handling setup completed');
+
       await new Promise((resolve, reject) => {
         socket.onopen = () => {
           debugLog(`WebSocket connected for tab ${tabId}`);
           
-          // First send device registration
-          socket.send(JSON.stringify({
-            type: 'device_register',
-            deviceId: this.deviceId,
-            deviceInfo: {
-              name: 'Chrome Extension Device',
-              version: '1.0.0',
-              userAgent: navigator.userAgent,
-              timestamp: new Date().toISOString()
-            }
-          }));
-          
-          // Then send connection info to bridge
+          // Send connection info to bridge (simplified like Microsoft's implementation)
           socket.send(JSON.stringify({
             type: 'connection_info',
-            deviceId: this.deviceId,
             sessionId: connection.sessionId,
             targetInfo: targetInfo?.targetInfo
           }));
@@ -493,9 +480,6 @@ class TabShareExtension {
         socket.onerror = reject;
         setTimeout(() => reject(new Error('Connection timeout')), 5000);
       });
-
-      // Set up message handling
-      this.setupMessageHandling(connection);
 
       // Store as current connection
       this.currentConnection = connection;
@@ -521,11 +505,16 @@ class TabShareExtension {
   setupMessageHandling(connection) {
     const { debuggee, socket, tabId, sessionId: rootSessionId } = connection;
 
+    debugLog('>>> setupMessageHandling called for tabId:', tabId, 'socket readyState:', socket.readyState);
+
     // WebSocket -> chrome.debugger
     socket.onmessage = async (event) => {
+      debugLog('>>> WebSocket onmessage event triggered! Event data length:', event.data?.length);
+      
       let message;
       try {
         message = JSON.parse(event.data);
+        debugLog('>>> Successfully parsed message:', message);
       } catch (error) {
         debugLog('Error parsing message:', error);
         socket.send(JSON.stringify({
@@ -547,44 +536,9 @@ class TabShareExtension {
       }
 
       try {
-        debugLog('Received from bridge:', message);
+        debugLog('>>> Processing CDP message from bridge:', message.method || 'response', 'id:', message.id);
 
-        // Lazy attach: only attach debugger when receiving actual CDP commands
-        if (message.method && !this.isAttached) {
-          debugLog('Lazy attaching debugger for first CDP command');
-          try {
-            await chrome.debugger.attach(debuggee, '1.3');
-            this.isAttached = true;
-            debugLog('Debugger attached successfully');
-          } catch (attachError) {
-            debugLog('Failed to attach debugger:', attachError);
-            const response = {
-              id: message.id,
-              sessionId: message.sessionId,
-              error: {
-                code: -32000,
-                message: `Failed to attach debugger: ${attachError.message}`,
-              },
-            };
-            socket.send(JSON.stringify(response));
-            return;
-          }
-        }
 
-        // Validate message parameters before calling debugger API
-        if (!message.method || typeof message.method !== 'string') {
-          debugLog('Invalid message method:', message.method);
-          const response = {
-            id: message.id,
-            sessionId: message.sessionId,
-            error: {
-              code: -32000,
-              message: 'Invalid or missing method parameter',
-            },
-          };
-          socket.send(JSON.stringify(response));
-          return;
-        }
 
         const debuggerSession = { ...debuggee };
         const sessionId = message.sessionId;
@@ -602,13 +556,29 @@ class TabShareExtension {
         });
 
         // Forward CDP command to chrome.debugger
-        const result = await chrome.debugger.sendCommand(
-          debuggerSession,
-          message.method,
-          params || {}
-        );
+        let result, error = null;
+        try {
+          result = await chrome.debugger.sendCommand(
+            debuggerSession,
+            message.method,
+            params || {}
+          );
+          
+          // Check for Chrome runtime error immediately after the call
+          if (chrome.runtime.lastError) {
+            error = {
+              code: -32000,
+              message: chrome.runtime.lastError.message,
+            };
+          }
+        } catch (cmdError) {
+          error = {
+            code: -32000,
+            message: cmdError.message || 'Unknown error in debugger command',
+          };
+        }
 
-        // Send response back to bridge
+        // Send response back to bridge (simplified like Microsoft's implementation)
         const response = {
           id: message.id,
           sessionId,
@@ -625,36 +595,19 @@ class TabShareExtension {
         socket.send(JSON.stringify(response));
       } catch (error) {
         debugLog('Error processing WebSocket message:', error);
-        debugLog('Error details:', {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        });
-        
-        // Check if this is a Chrome Extension API error
-        let errorMessage = error.message;
-        if (error.message && error.message.includes('debugger.sendCommand')) {
-          errorMessage = `Chrome Extension API error: ${error.message}`;
-          debugLog('This may be due to:');
-          debugLog('1. Invalid debugger session or tab ID');
-          debugLog('2. Incorrect parameter types');
-          debugLog('3. Debugger not attached properly');
-          debugLog('4. Invalid CDP method or parameters');
-        }
-        
         const response = {
           id: message.id,
           sessionId: message.sessionId,
           error: {
             code: -32000,
-            message: errorMessage,
+            message: error.message,
           },
         };
         socket.send(JSON.stringify(response));
       }
     };
 
-    // chrome.debugger events -> WebSocket
+    // chrome.debugger events -> WebSocket (simplified like Microsoft's implementation)
     const eventListener = (source, method, params) => {
       if (source.tabId === tabId && socket.readyState === WebSocket.OPEN) {
         // If the sessionId is not provided, use the root sessionId.
