@@ -21,7 +21,7 @@ import { ApiRoutes } from './api-routes.js';
 // Initialize configuration
 const config = getAppConfig();
 const app: Application = express();
-const port: number = 3000;
+const port: number = config.port || 3000;
 
 // Load OpenAPI specification
 const openApiSpec = loadOpenApiSpec();
@@ -48,7 +48,7 @@ app.get('/openapi.json', (_req, res) => {
 // Initialize core components
 const chromeManager = new ChromeManager(config);
 const deviceManager = new DeviceManager();
-const cdpRelayBridge = new CDPRelayBridge(deviceManager);
+const cdpRelayBridge = new CDPRelayBridge(deviceManager, config);
 const webSocketHandlers = new WebSocketHandlers(cdpRelayBridge, chromeManager, deviceManager, config.token);
 const apiRoutes = new ApiRoutes(chromeManager, deviceManager);
 

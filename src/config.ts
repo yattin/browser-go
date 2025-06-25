@@ -16,11 +16,14 @@ Options:
   --instance-timeout=<minutes>  Instance timeout in minutes (default: 60 minutes)
   --inactive-check-interval=<minutes>  Inactive instance check interval in minutes (default: 5 minutes)
   --token=<string>             Access token (default: 'browser-go-token')
+  --port=<number>              Server port (default: 3000)
+  --cdp-logging                Enable detailed CDP protocol logging for debugging (default: false)
   --help                       Show help information
 
 Examples:
   node cli.js --max-instances=5 --instance-timeout=30
-  node cli.js --token=my-secret-token
+  node cli.js --token=my-secret-token --port=3000
+  node cli.js --cdp-logging --token=debug-token
 `);
   process.exit(0);
 }
@@ -33,6 +36,8 @@ export function parseArgs(): AppConfig {
     instanceTimeout: 60, // 默认60分钟
     inactiveCheckInterval: 5, // 默认5分钟
     token: 'browser-go-token',
+    cdpLogging: false, // 默认关闭CDP详细日志
+    port: 3000, // 默认端口
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -54,6 +59,12 @@ export function parseArgs(): AppConfig {
           break;
         case 'token':
           config.token = value || 'browser-go-token';
+          break;
+        case 'port':
+          config.port = parseInt(value, 10) || 3000;
+          break;
+        case 'cdp-logging':
+          config.cdpLogging = true; // 布尔标志，不需要值
           break;
       }
     }

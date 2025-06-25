@@ -59,6 +59,8 @@ export interface AppConfig {
   instanceTimeout: number; // minutes
   inactiveCheckInterval: number; // minutes
   token: string;
+  cdpLogging: boolean; // Enable detailed CDP protocol logging for debugging
+  port?: number; // Server port number
 }
 
 // For chromeLauncher options in cli.ts

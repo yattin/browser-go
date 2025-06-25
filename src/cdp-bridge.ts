@@ -7,6 +7,7 @@
 import WebSocket from 'ws';
 import { logger } from './logger.js';
 import { DeviceManager } from './device-manager.js';
+import { AppConfig } from './types.js';
 
 interface CDPConnection {
   socket: WebSocket;
@@ -17,9 +18,11 @@ interface CDPConnection {
 export class CDPRelayBridge {
   private cdpConnections: Map<WebSocket, CDPConnection> = new Map();
   private deviceManager: DeviceManager;
+  private config: AppConfig;
 
-  constructor(deviceManager: DeviceManager) {
+  constructor(deviceManager: DeviceManager, config: AppConfig) {
     this.deviceManager = deviceManager;
+    this.config = config;
   }
 
   /**
@@ -91,6 +94,52 @@ export class CDPRelayBridge {
   }
 
   /**
+   * Log CDP protocol data with detailed information when enabled
+   */
+  private _logCDPProtocol(direction: '→' | '←', source: string, target: string, message: any): void {
+    const methodOrType = message.method || 
+      (message.error ? `error_response(id=${message.id}, code=${message.error.code})` : 
+       `response(id=${message.id})`);
+    
+    // Always log basic message info
+    logger.info(`${direction} ${source} → ${target}: ${methodOrType}`);
+    
+    // Log detailed protocol data when enabled
+    if (this.config.cdpLogging) {
+      const timestamp = new Date().toISOString();
+      const messageSize = JSON.stringify(message).length;
+      
+      logger.info(`[CDP-PROTOCOL] ${timestamp} ${direction} ${source} → ${target}:`);
+      logger.info(`[CDP-PROTOCOL] Message Size: ${messageSize} bytes`);
+      logger.info(`[CDP-PROTOCOL] Full Message: ${JSON.stringify(message, null, 2)}`);
+      
+      // Additional analysis for method calls
+      if (message.method) {
+        const domain = message.method.split('.')[0];
+        logger.info(`[CDP-PROTOCOL] Domain: ${domain}, Method: ${message.method}`);
+        if (message.params && Object.keys(message.params).length > 0) {
+          logger.info(`[CDP-PROTOCOL] Parameters: ${JSON.stringify(message.params, null, 2)}`);
+        }
+      }
+      
+      // Additional analysis for responses
+      if (message.result || message.error) {
+        if (message.error) {
+          logger.info(`[CDP-PROTOCOL] Error Code: ${message.error.code}`);
+          logger.info(`[CDP-PROTOCOL] Error Message: ${message.error.message}`);
+          if (message.error.data) {
+            logger.info(`[CDP-PROTOCOL] Error Data: ${JSON.stringify(message.error.data, null, 2)}`);
+          }
+        } else if (message.result) {
+          logger.info(`[CDP-PROTOCOL] Result Keys: ${Object.keys(message.result).join(', ')}`);
+        }
+      }
+      
+      logger.info('[CDP-PROTOCOL] ----------------------------------------');
+    }
+  }
+
+  /**
    * Handle messages from CDP clients
    */
   private _handleCDPMessage(cdpSocket: WebSocket, message: any): void {
@@ -100,7 +149,8 @@ export class CDPRelayBridge {
       return;
     }
 
-    logger.info(`← CDP: ${message.method || `response(${message.id})`}`);
+    const deviceId = connection.deviceId || 'none';
+    this._logCDPProtocol('←', 'CDP Client', `Bridge(${deviceId})`, message);
 
     // Handle Browser domain methods locally
     if (message.method?.startsWith('Browser.')) {
@@ -111,6 +161,12 @@ export class CDPRelayBridge {
     // Handle Target domain methods
     if (message.method?.startsWith('Target.')) {
       this._handleTargetDomainMethod(cdpSocket, message);
+      return;
+    }
+
+    // Handle Page domain methods locally for Patchright compatibility
+    if (message.method?.startsWith('Page.') && this._shouldHandlePageMethodLocally(message.method)) {
+      this._handlePageDomainMethod(cdpSocket, message);
       return;
     }
 
@@ -168,24 +224,18 @@ export class CDPRelayBridge {
       return;
     }
 
-    // Determine message type for logging and handling
-    let messageType: string;
-    if (message.method) {
-      messageType = message.method;
-    } else if (message.id) {
-      if (message.error) {
-        messageType = `error_response(id=${message.id}, code=${message.error.code})`;
-      } else {
-        messageType = `response(id=${message.id})`;
+    // Find the device ID for this extension
+    let deviceId: string | null = null;
+    const devices = this.deviceManager.getAllDevices();
+    for (const device of devices) {
+      if (device.extensionSocket === extensionSocket) {
+        deviceId = device.deviceId;
+        break;
       }
-    } else if (message.error) {
-      // Handle standalone error messages (no id)
-      messageType = `standalone_error(code=${message.error.code})`;
-    } else {
-      messageType = 'unknown';
     }
 
-    logger.info(`← Extension message: ${messageType}`);
+    // Log the extension message using detailed protocol logging
+    this._logCDPProtocol('←', `Extension(${deviceId || 'unknown'})`, 'Bridge', message);
     
     // Handle error responses specially
     if (message.error) {
@@ -200,11 +250,6 @@ export class CDPRelayBridge {
       } else {
         logger.warn(`← Extension reported error ${message.error.code}: ${message.error.message}`);
       }
-    }
-    
-    // Print full message body for unknown messages or for debugging
-    if (messageType === 'unknown') {
-      logger.info('← Extension unknown message body:', message);
     }
     
     // Handle message forwarding based on type
@@ -247,6 +292,81 @@ export class CDPRelayBridge {
   }
 
   /**
+   * Check if Page method should be handled locally for Patchright compatibility
+   */
+  private _shouldHandlePageMethodLocally(method: string): boolean {
+    const localPageMethods = [
+      'Page.getFrameTree'  // Critical for Patchright frame management
+    ];
+    return localPageMethods.includes(method);
+  }
+
+  /**
+   * Handle critical Page domain methods locally for Patchright compatibility
+   */
+  private _handlePageDomainMethod(cdpSocket: WebSocket, message: any): void {
+    const connection = this.cdpConnections.get(cdpSocket);
+    if (!connection) return;
+
+    switch (message.method) {
+      case 'Page.getFrameTree': {
+        const device = connection.deviceId ? this.deviceManager.getDevice(connection.deviceId) : null;
+        const connectionInfo = device?.connectionInfo;
+        
+        if (connectionInfo) {
+          // Provide a stable frame tree structure for Patchright
+          const frameUrl = connectionInfo.targetInfo.url || 'about:blank';
+          let securityOrigin = 'null';
+          let domainAndRegistry = '';
+          let secureContextType = 'Insecure';
+          
+          try {
+            if (frameUrl !== 'about:blank' && frameUrl.startsWith('http')) {
+              const url = new URL(frameUrl);
+              securityOrigin = url.origin;
+              domainAndRegistry = url.hostname;
+              secureContextType = frameUrl.startsWith('https') ? 'Secure' : 'Insecure';
+            }
+          } catch (error) {
+            // Fallback to default values for invalid URLs
+            securityOrigin = 'null';
+            domainAndRegistry = '';
+            secureContextType = 'Insecure';
+          }
+          
+          this._sendToCDP(cdpSocket, {
+            id: message.id,
+            result: {
+              frameTree: {
+                frame: {
+                  id: connectionInfo.targetInfo.targetId,
+                  loaderId: connectionInfo.targetInfo.targetId + '_loader',
+                  url: frameUrl,
+                  domainAndRegistry: domainAndRegistry,
+                  securityOrigin: securityOrigin,
+                  mimeType: 'text/html',
+                  secureContextType: secureContextType,
+                  crossOriginIsolatedContextType: 'NotIsolated',
+                  gatedAPIFeatures: []
+                },
+                childFrames: []
+              }
+            }
+          });
+        } else {
+          // Fallback: forward to extension
+          this._forwardToExtension(cdpSocket, message);
+        }
+        break;
+      }
+
+      default:
+        // For other Page methods, forward to extension
+        this._forwardToExtension(cdpSocket, message);
+    }
+  }
+
+  /**
    * Handle Target domain methods locally
    */
   private _handleTargetDomainMethod(cdpSocket: WebSocket, message: any): void {
@@ -260,7 +380,11 @@ export class CDPRelayBridge {
         const connectionInfo = device?.connectionInfo;
         
         if (connectionInfo && !message.sessionId) {
-          logger.info('Simulating auto-attach for target:', JSON.stringify(message));
+          // Simulate auto-attach behavior only for main target (no sessionId)
+          // This matches Microsoft's playwright-mcp implementation
+          logger.info('Simulating auto-attach for main target');
+          
+          // First send the Target.attachedToTarget event
           this._sendToCDP(cdpSocket, {
             method: 'Target.attachedToTarget',
             params: {
@@ -272,11 +396,14 @@ export class CDPRelayBridge {
               waitingForDebugger: false
             }
           });
+          
+          // Then send the success response
           this._sendToCDP(cdpSocket, {
             id: message.id,
             result: {}
           });
         } else {
+          // For session-specific auto-attach or when no connection info, forward to extension
           this._forwardToExtension(cdpSocket, message);
         }
         break;
@@ -317,15 +444,16 @@ export class CDPRelayBridge {
       : null;
 
     if (deviceSocket) {
-      logger.info(`→ Extension (${connection.deviceId}): ${message.method || `command(${message.id})`}`);
+      this._logCDPProtocol('→', `Bridge(${connection.deviceId})`, `Extension(${connection.deviceId})`, message);
       deviceSocket.send(JSON.stringify(message));
     } else {
       logger.info(`Extension not connected for device: ${connection.deviceId || 'none'}`);
       if (message.id) {
-        this._sendToCDP(cdpSocket, {
+        const errorResponse = {
           id: message.id,
           error: { message: `Extension not connected for device: ${connection.deviceId || 'none'}` }
-        });
+        };
+        this._sendToCDP(cdpSocket, errorResponse);
       }
     }
   }
@@ -352,14 +480,11 @@ export class CDPRelayBridge {
     // Forward to CDP connections for this device
     let forwarded = false;
     for (const [cdpSocket, connection] of this.cdpConnections.entries()) {
+      logger.debug(`Checking message to CDP client for device: ${connection.deviceId}`);
       if (connection.deviceId === deviceId) {
         if (cdpSocket.readyState === WebSocket.OPEN) {
           try {
-            const logMessage = message.error 
-              ? `error_response(id=${message.id}, code=${message.error.code})`
-              : (message.method || `response(id=${message.id})`);
-            
-            logger.info(`→ CDP (${connection.deviceId}): ${logMessage}`);
+            this._logCDPProtocol('→', `Bridge(${deviceId})`, `CDP Client(${deviceId})`, message);
             cdpSocket.send(JSON.stringify(message));
             forwarded = true;
           } catch (error) {
@@ -381,7 +506,9 @@ export class CDPRelayBridge {
    */
   private _sendToCDP(cdpSocket: WebSocket, message: any): void {
     if (cdpSocket.readyState === WebSocket.OPEN) {
-      logger.info(`→ CDP: ${JSON.stringify(message)}`);
+      const connection = this.cdpConnections.get(cdpSocket);
+      const deviceId = connection?.deviceId || 'none';
+      this._logCDPProtocol('→', `Bridge(${deviceId})`, `CDP Client(${deviceId})`, message);
       cdpSocket.send(JSON.stringify(message));
     }
   }
