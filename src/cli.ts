@@ -9,7 +9,7 @@ import express, { Application } from 'express';
 import http, { Server } from 'http';
 import swaggerUi from 'swagger-ui-express';
 
-import { logger } from './logger.js';
+import { logger, closeLogger } from './logger.js';
 import { getAppConfig } from './config.js';
 import { loadOpenApiSpec } from './openapi.js';
 import { DeviceManager } from './device-manager.js';
@@ -67,45 +67,91 @@ server.on('upgrade', async (req, socket, head) => {
 async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   
+  // 设置强制退出的超时
+  const forceExitTimeout = setTimeout(() => {
+    logger.error('Graceful shutdown timeout, forcing exit...');
+    process.exit(1);
+  }, 10000); // 10 秒超时
+  
   try {
     // Close HTTP server
+    logger.info('Closing HTTP server...');
     await new Promise<void>((resolve, reject) => {
       server.close((err) => {
         if (err) {
           reject(err);
         } else {
+          logger.info('HTTP server closed');
           resolve();
         }
       });
     });
     
     // Shutdown Chrome manager
+    logger.info('Shutting down Chrome manager...');
     await chromeManager.shutdown();
+    logger.info('Chrome manager shutdown completed');
     
     // Shutdown Device manager
+    logger.info('Shutting down Device manager...');
     deviceManager.shutdown();
+    logger.info('Device manager shutdown completed');
+    
+    // Shutdown CDP bridge
+    logger.info('Shutting down CDP bridge...');
+    cdpRelayBridge.shutdown();
+    logger.info('CDP bridge shutdown completed');
+    
+    // 清除所有定时器
+    clearTimeout(forceExitTimeout);
     
     logger.info('Graceful shutdown completed');
+    
+    // Close logger to ensure all logs are written
+    await closeLogger();
+    
+    // 强制退出，不等待其他可能的异步操作
     process.exit(0);
   } catch (error) {
     logger.error('Error during graceful shutdown:', error);
+    clearTimeout(forceExitTimeout);
     process.exit(1);
   }
 }
 
+// 防止多次调用 gracefulShutdown
+let isShuttingDown = false;
+
 // Setup signal handlers
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => {
+  if (!isShuttingDown) {
+    isShuttingDown = true;
+    gracefulShutdown('SIGTERM');
+  }
+});
+
+process.on('SIGINT', () => {
+  if (!isShuttingDown) {
+    isShuttingDown = true;
+    gracefulShutdown('SIGINT');
+  }
+});
 
 // Handle uncaught exceptions and unhandled rejections
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
-  gracefulShutdown('uncaughtException');
+  if (!isShuttingDown) {
+    isShuttingDown = true;
+    gracefulShutdown('uncaughtException');
+  }
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  gracefulShutdown('unhandledRejection');
+  if (!isShuttingDown) {
+    isShuttingDown = true;
+    gracefulShutdown('unhandledRejection');
+  }
 });
 
 // Start the server

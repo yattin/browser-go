@@ -9,7 +9,9 @@ import { chromium } from 'patchright';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-const cdpUrl: string = `ws://127.0.0.1:3000/cdp?deviceId=device-016b8bc2-5c82-44fd-a6d3-a377aad38a4d`;
+// const cdpUrl: string = `ws://127.0.0.1:3000/cdp?deviceId=device-016b8bc2-5c82-44fd-a6d3-a377aad38a4d`;
+
+const cdpUrl: string = `ws://127.0.0.1:3000/cdp`;
 
 console.log(`🔗 Connecting to CDP endpoint: ${cdpUrl}`);
 console.log('📝 Make sure you have a browser extension connected to /extension endpoint');
@@ -110,8 +112,17 @@ async function runBridgeTest() {
     console.log('\n⏸️  Browser will remain open for manual inspection...');
     console.log('   Press Ctrl+C to close the test');
     
-    // Wait indefinitely (user can close manually)
-    await new Promise(() => {});
+    // Wait for user input with a proper cleanup mechanism
+    await new Promise<void>((resolve) => {
+      process.once('SIGINT', () => {
+        console.log('\n🔄 Closing browser connection...');
+        browser.close().then(() => resolve()).catch(() => resolve());
+      });
+      process.once('SIGTERM', () => {
+        console.log('\n🔄 Closing browser connection...');
+        browser.close().then(() => resolve()).catch(() => resolve());
+      });
+    });
     
   } catch (error: any) {
     console.error('\n❌ Test execution failed:', error);
@@ -124,16 +135,8 @@ async function runBridgeTest() {
   }
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n👋 Test interrupted by user');
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  console.log('\n👋 Test terminated');
-  process.exit(0);
-});
+// Handle graceful shutdown is now handled inside the test function
+// to ensure proper cleanup
 
 runBridgeTest().catch((error) => {
   console.error('Unhandled error in runBridgeTest:', error);

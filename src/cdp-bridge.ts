@@ -300,4 +300,25 @@ export class CDPRelayBridge {
       extensionConnected: this.extensionSocket?.readyState === WebSocket.OPEN,
     };
   }
+
+  /**
+   * Shutdown the CDP bridge and close all connections
+   */
+  shutdown(): void {
+    logger.info('Shutting down CDP bridge...');
+    
+    // Close Playwright socket
+    if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
+      this.playwrightSocket.close(1000, 'Server shutdown');
+      this.playwrightSocket = null;
+    }
+    
+    // Close Extension socket
+    if (this.extensionSocket?.readyState === WebSocket.OPEN) {
+      this.extensionSocket.close(1000, 'Server shutdown');
+      this.extensionSocket = null;
+    }
+    
+    logger.info('CDP bridge shutdown completed');
+  }
 }

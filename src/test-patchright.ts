@@ -58,7 +58,7 @@ class PlaywrightCompatibilityTest {
         // Start the server with CDP logging for debugging
         this.serverProcess = spawn('node', [
           'dist/cli.js', 
-          '--cdp-logging',  // Enable detailed CDP logging
+          // '--cdp-logging',  // Enable detailed CDP logging
           `--port=${this.config.serverPort}`, 
           `--token=${this.config.serverToken}`
         ], {

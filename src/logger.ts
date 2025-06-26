@@ -45,5 +45,15 @@ logger.on('error', (error: Error) => {
   console.error('Logger error:', error);
 });
 
+// 关闭 logger 的所有传输
+export async function closeLogger(): Promise<void> {
+  return new Promise((resolve) => {
+    logger.on('finish', () => {
+      resolve();
+    });
+    logger.end();
+  });
+}
+
 // 导出 logger 实例
 export { logger };
