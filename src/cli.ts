@@ -67,7 +67,7 @@ if (config.v2) {
   const v2Config: V2Config = {
     heartbeatInterval: 30000, // 30 seconds
     connectionTimeout: 60000, // 1 minute
-    messageTimeout: 10000, // 10 seconds
+    messageTimeout: 20000, // 20 seconds - increased for better stability
     maxQueueSize: 1000,
     maxRetries: 3,
     retryDelay: 1000,

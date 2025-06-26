@@ -131,8 +131,8 @@ class TabShareExtensionV2 {
       // Step 1: Register device
       await this.registerDeviceV2(baseUrl);
       
-      // Step 2: Setup CDP connection
-      await this.setupCDPConnectionV2(tabId, baseUrl);
+      // Step 2: Setup CDP message handling on the device connection  
+      await this.setupCDPHandlingOnDeviceConnection(tabId, baseUrl);
       
       // Step 3: Start heartbeat
       this.startHeartbeatV2();
@@ -195,23 +195,38 @@ class TabShareExtensionV2 {
         deviceWs.send(JSON.stringify(registrationMessage));
       };
       
+      // Set up unified message handler for device connection
       deviceWs.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          debugLog('Device registration response:', message);
           
-          if (message.type === 'device:register:ack') {
-            debugLog('Device registration successful');
-            clearTimeout(timeout);
-            this.deviceConnection = deviceWs;
-            resolve();
-          } else if (message.type === 'error') {
-            clearTimeout(timeout);
-            deviceWs.close();
-            reject(new Error(`Registration failed: ${message.data?.message || 'Unknown error'}`));
+          // Handle V2 control messages (registration, heartbeat, etc.)
+          if (message.type) {
+            debugLog('Device control message:', message.type);
+            
+            if (message.type === 'device:register:ack') {
+              debugLog('Device registration successful');
+              clearTimeout(timeout);
+              this.deviceConnection = deviceWs;
+              resolve();
+            } else if (message.type === 'error') {
+              clearTimeout(timeout);
+              deviceWs.close();
+              reject(new Error(`Registration failed: ${message.data?.message || 'Unknown error'}`));
+            } else if (message.type === 'device:heartbeat:ack') {
+              debugLog('Heartbeat acknowledged');
+            }
+          } 
+          // Handle CDP messages (no 'type' field, has 'method' or 'id')
+          else if (message.method || message.id) {
+            debugLog('Received CDP message on device connection:', message);
+            // Forward to CDP handler if it's set up
+            if (this.currentConnection && this.currentConnection.socket === deviceWs) {
+              this.handleCDPMessage(message);
+            }
           }
         } catch (error) {
-          debugLog('Error parsing device registration response:', error);
+          debugLog('Error parsing device message:', error);
         }
       };
       
@@ -224,7 +239,116 @@ class TabShareExtensionV2 {
   }
 
   /**
-   * Setup CDP connection using V2 endpoint
+   * Setup CDP message handling on the existing device connection
+   */
+  async setupCDPHandlingOnDeviceConnection(tabId, baseUrl) {
+    debugLog(`Setting up CDP handling on device connection for tab ${tabId}...`);
+    
+    // Attach chrome debugger
+    const debuggee = { tabId };
+    await chrome.debugger.attach(debuggee, '1.3');
+    
+    if (chrome.runtime.lastError) {
+      throw new Error(chrome.runtime.lastError.message);
+    }
+    
+    this.isAttached = true;
+    
+    // Get target info
+    const targetInfo = await chrome.debugger.sendCommand(debuggee, 'Target.getTargetInfo');
+    debugLog('Target info:', targetInfo);
+    
+    // Create connection object using the existing device connection
+    const connection = {
+      debuggee,
+      socket: this.deviceConnection, // Use existing device WebSocket
+      tabId,
+      sessionId: `pw-tab-${tabId}`,
+      bridgeUrl: baseUrl,
+      isManualDisconnect: false,
+      isV2: true
+    };
+    
+    this.currentConnection = connection;
+    this.currentTabId = tabId;
+    
+    debugLog('CDP handling setup completed on device connection');
+  }
+
+  /**
+   * Handle CDP messages received on device connection
+   */
+  async handleCDPMessage(message) {
+    if (!this.currentConnection) {
+      debugLog('No current connection for CDP message handling');
+      return;
+    }
+
+    const { debuggee, socket } = this.currentConnection;
+    debugLog('Processing CDP message:', message.method, 'ID:', message.id);
+
+    try {
+      const debuggerSession = { ...debuggee };
+      const sessionId = message.sessionId;
+      
+      if (sessionId && typeof sessionId === 'string') {
+        debuggerSession.sessionId = sessionId;
+      }
+      
+      const params = message.params && typeof message.params === 'object' ? message.params : {};
+      
+      // Forward CDP command to chrome.debugger
+      let result, error = null;
+      try {
+        result = await chrome.debugger.sendCommand(
+          debuggerSession,
+          message.method,
+          params || {}
+        );
+        
+        if (chrome.runtime.lastError) {
+          error = {
+            code: -32000,
+            message: chrome.runtime.lastError.message,
+          };
+        }
+      } catch (cmdError) {
+        error = {
+          code: -32000,
+          message: cmdError.message || 'Unknown error in debugger command',
+        };
+      }
+      
+      // Send response back through device connection
+      const response = {
+        id: message.id,
+        sessionId,
+        result
+      };
+      
+      if (error) {
+        response.error = error;
+      }
+      
+      debugLog('Sending CDP response:', response.id, error ? 'ERROR' : 'SUCCESS');
+      socket.send(JSON.stringify(response));
+      
+    } catch (error) {
+      debugLog('Error processing CDP message:', error);
+      const response = {
+        id: message.id,
+        sessionId: message.sessionId,
+        error: {
+          code: -32000,
+          message: error.message,
+        },
+      };
+      socket.send(JSON.stringify(response));
+    }
+  }
+
+  /**
+   * Setup CDP connection using V2 endpoint (DEPRECATED - now use device connection)
    */
   async setupCDPConnectionV2(tabId, baseUrl) {
     debugLog(`Setting up V2 CDP connection for tab ${tabId}...`);

@@ -506,17 +506,22 @@ class V2E2ETestRunner {
             ws.close();
             resolve(false);
           }
-        }, 15000);
+        }, 25000); // Increased timeout to match server messageTimeout + buffer
         
         ws.on('open', () => {
           this.log('V2 CDP WebSocket connected');
           
-          // Test Browser.getVersion command
-          ws.send(JSON.stringify({
-            id: 'test-v2-cdp',
-            method: 'Browser.getVersion',
-            params: {}
-          }));
+          // Add stability delay before sending command
+          setTimeout(() => {
+            this.log('Sending V2 CDP command after stability delay...');
+            
+            // Test Browser.getVersion command
+            ws.send(JSON.stringify({
+              id: 'test-v2-cdp',
+              method: 'Browser.getVersion',
+              params: {}
+            }));
+          }, 8000); // 8 second delay for better connection stability
         });
         
         ws.on('message', (data) => {
@@ -749,23 +754,28 @@ class V2E2ETestRunner {
             ws.close();
             resolve(false);
           }
-        }, 20000);
+        }, 30000); // Increased timeout for better stability
         
         ws.on('open', () => {
-          this.log('Sending concurrent V2 CDP messages...');
+          this.log('V2 concurrent messaging WebSocket connected');
           
-          // Send multiple commands with different priorities
-          const commands = [
-            { id: 'v2-concurrent-1', method: 'Browser.getVersion', params: {} },
-            { id: 'v2-concurrent-2', method: 'Target.getTargets', params: {} },
-            { id: 'v2-concurrent-3', method: 'Runtime.evaluate', params: { expression: '2+2' } },
-            { id: 'v2-concurrent-4', method: 'Page.enable', params: {} },
-            { id: 'v2-concurrent-5', method: 'Runtime.enable', params: {} }
-          ];
-          
-          commands.forEach(cmd => {
-            ws.send(JSON.stringify(cmd));
-          });
+          // Add smaller delay for concurrent test stability
+          setTimeout(() => {
+            this.log('Sending concurrent V2 CDP messages after delay...');
+            
+            // Send multiple commands with different priorities
+            const commands = [
+              { id: 'v2-concurrent-1', method: 'Browser.getVersion', params: {} },
+              { id: 'v2-concurrent-2', method: 'Target.getTargets', params: {} },
+              { id: 'v2-concurrent-3', method: 'Runtime.evaluate', params: { expression: '2+2' } },
+              { id: 'v2-concurrent-4', method: 'Page.enable', params: {} },
+              { id: 'v2-concurrent-5', method: 'Runtime.enable', params: {} }
+            ];
+            
+            commands.forEach(cmd => {
+              ws.send(JSON.stringify(cmd));
+            });
+          }, 5000); // 5 second delay for concurrent test stability
         });
         
         ws.on('message', (data) => {

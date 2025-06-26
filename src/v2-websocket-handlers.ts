@@ -109,16 +109,71 @@ export class V2WebSocketHandlers {
 
     logger.info(`CDP connection established for device: ${deviceId}`);
 
-    // Set up CDP message handlers
-    ws.on('message', async (data: Buffer) => {
-      try {
-        const cdpMessage: CDPMessage = JSON.parse(data.toString());
-        await this.handleCDPMessage(ws, deviceId, cdpMessage);
-      } catch (error) {
-        logger.error(`CDP message error (${deviceId}):`, error);
-        this.sendCDPError(ws, -1, 'PARSE_ERROR', 'Failed to parse CDP message');
-      }
-    });
+    // Check if this is a direct client connection (not from the device itself)
+    const isDirectClientConnection = ws !== device.websocket;
+    
+    if (isDirectClientConnection) {
+      logger.info(`Direct client CDP connection for device: ${deviceId}`);
+      
+      // For direct client connections, we route messages through the device's websocket
+      ws.on('message', async (data: Buffer) => {
+        try {
+          const cdpMessage: CDPMessage = JSON.parse(data.toString());
+          logger.info(`Direct client sending CDP message: ${cdpMessage.method} with ID: ${cdpMessage.id}`);
+          
+          // Forward message directly to device websocket
+          if (device.websocket.readyState === device.websocket.OPEN) {
+            device.websocket.send(data.toString());
+            logger.info(`Forwarded message to device websocket`);
+          } else {
+            logger.warn(`Device websocket not open, cannot forward message`);
+            this.sendCDPError(ws, cdpMessage.id || -1, 'DEVICE_UNAVAILABLE', 'Device WebSocket not available');
+          }
+        } catch (error) {
+          logger.error(`Direct client CDP message error (${deviceId}):`, error);
+          this.sendCDPError(ws, -1, 'PARSE_ERROR', 'Failed to parse CDP message');
+        }
+      });
+      
+      // Listen for responses from device websocket and forward to client
+      const responseHandler = (data: Buffer) => {
+        try {
+          const response = JSON.parse(data.toString());
+          // Only forward actual CDP responses (not V2 control messages or heartbeats)
+          if (response.id && 
+              ws.readyState === ws.OPEN && 
+              !response.type && // V2 messages have 'type' field, CDP responses don't
+              (response.result !== undefined || response.error !== undefined)) {
+            logger.info(`Forwarding CDP response for ID: ${response.id} to client`);
+            ws.send(data.toString());
+          } else if (response.id && !response.type) {
+            logger.debug(`Ignoring non-CDP message with ID: ${response.id}`);
+          }
+        } catch (error) {
+          logger.error(`Error forwarding device response:`, error);
+        }
+      };
+      
+      device.websocket.on('message', responseHandler);
+      
+      // Clean up listener when client disconnects
+      ws.on('close', () => {
+        device.websocket.removeListener('message', responseHandler);
+        logger.info(`Direct client disconnected from device: ${deviceId}`);
+      });
+      
+    } else {
+      // This is the device's own connection, handle normally
+      ws.on('message', async (data: Buffer) => {
+        try {
+          const cdpMessage: CDPMessage = JSON.parse(data.toString());
+          await this.handleCDPMessage(ws, deviceId, cdpMessage);
+        } catch (error) {
+          logger.error(`CDP message error (${deviceId}):`, error);
+          this.sendCDPError(ws, -1, 'PARSE_ERROR', 'Failed to parse CDP message');
+        }
+      });
+    }
 
     ws.on('close', (code: number, reason: Buffer) => {
       logger.info(`CDP connection closed for device: ${deviceId} (${code}: ${reason.toString()})`);
@@ -307,7 +362,9 @@ export class V2WebSocketHandlers {
     try {
       if (message.id && message.method) {
         // This is a CDP request
+        logger.info(`Processing CDP request: ${message.method} with ID: ${message.id} for device: ${deviceId}`);
         const response = await this.messageRouter.route(deviceId, message);
+        logger.info(`Received response for ${message.method} with ID: ${message.id}`);
         
         const cdpResponse: CDPResponse = {
           id: message.id,
@@ -315,6 +372,7 @@ export class V2WebSocketHandlers {
           error: response.error
         };
         
+        logger.info(`Sending CDP response back to client for ID: ${message.id}`);
         ws.send(JSON.stringify(cdpResponse));
       } else if (message.method) {
         // This is a CDP event

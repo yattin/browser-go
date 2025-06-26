@@ -227,10 +227,12 @@ export class V2MessageRouter extends EventEmitter implements IMessageRouter {
 
   handleResponse(deviceId: string, response: CDPResponse): void {
     const messageId = String(response.id);
+    logger.info(`Handling response for device: ${deviceId}, messageId: ${messageId}`);
     const pendingMessage = this.pendingMessages.get(deviceId)?.[messageId];
     
     if (!pendingMessage) {
       logger.warn(`Received response for unknown message: ${deviceId}/${messageId}`);
+      logger.info(`Available pending messages for device ${deviceId}:`, Object.keys(this.pendingMessages.get(deviceId) || {}));
       return;
     }
 
