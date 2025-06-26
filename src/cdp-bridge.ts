@@ -178,6 +178,22 @@ export class CDPRelayBridge {
       return;
     }
 
+    // Handle ping messages separately - only log heartbeat info
+    if (message.type === 'ping') {
+      logger.info(`← Heartbeat ping from device: ${message.deviceId}`);
+      // Send pong response
+      if (this.extensionSocket?.readyState === WebSocket.OPEN) {
+        const pongMessage = {
+          type: 'pong',
+          deviceId: message.deviceId,
+          timestamp: Date.now()
+        };
+        this.extensionSocket.send(JSON.stringify(pongMessage));
+        logger.info(`→ Heartbeat pong to device: ${message.deviceId}`);
+      }
+      return;
+    }
+
     // CDP event from extension
     this._logCDPProtocol('←', 'Extension', 'Bridge', message);
     this._sendToPlaywright(message);
