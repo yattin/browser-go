@@ -443,6 +443,9 @@ class TabShareExtension {
       if (chrome.runtime.lastError)
         throw new Error(chrome.runtime.lastError.message);
       
+      // Mark debugger as attached
+      this.isAttached = true;
+      
       // Get target info after attaching
       const targetInfo = await chrome.debugger.sendCommand(debuggee, 'Target.getTargetInfo');
       debugLog('Target info:', targetInfo);
@@ -458,6 +461,11 @@ class TabShareExtension {
         isManualDisconnect: false // 标记是否为手动断开
       };
 
+      // Store as current connection BEFORE setting up message handling
+      // This ensures event handlers can properly check connection state
+      this.currentConnection = connection;
+      this.currentTabId = tabId;
+
       // Set up message handling IMMEDIATELY after creating the connection
       // This ensures no messages are lost during the connection setup process
       debugLog('>>> Setting up message handling for connection, tabId:', tabId);
@@ -469,21 +477,26 @@ class TabShareExtension {
           debugLog(`WebSocket connected for tab ${tabId}`);
           
           // Send connection info to bridge (simplified like Microsoft's implementation)
-          socket.send(JSON.stringify({
+          const connectionInfo = {
             type: 'connection_info',
             sessionId: connection.sessionId,
             targetInfo: targetInfo?.targetInfo
-          }));
+          };
+          debugLog('Sending connection info:', connectionInfo);
+          socket.send(JSON.stringify(connectionInfo));
+          debugLog('Connection info sent successfully');
           
           resolve(undefined);
         };
-        socket.onerror = reject;
-        setTimeout(() => reject(new Error('Connection timeout')), 5000);
+        socket.onerror = (error) => {
+          debugLog(`WebSocket connection error for tab ${tabId}:`, error);
+          reject(error);
+        };
+        setTimeout(() => {
+          debugLog(`WebSocket connection timeout for tab ${tabId}`);
+          reject(new Error('Connection timeout'));
+        }, 5000);
       });
-
-      // Store as current connection
-      this.currentConnection = connection;
-      this.currentTabId = tabId;
       this.reconnectAttempts = 0; // Reset reconnect attempts
       this.lastHeartbeat = Date.now(); // Initialize heartbeat
       
