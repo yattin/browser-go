@@ -105,12 +105,31 @@ export class CDPRelayBridge {
    * Handle Chrome extension connections
    */
   handleExtensionConnection(ws: WebSocket): void {
-    // Close previous connection if exists
+    // In multi-device mode, avoid closing active device connections
+    // Check if the current extensionSocket is actively used by registered devices
+    let shouldCloseOldConnection = false;
+    
     if (this.extensionSocket?.readyState === WebSocket.OPEN) {
-      logger.info('Closing previous extension connection');
+      const registeredDevices = this.deviceManager.getAllDevices();
+      const activeDeviceUsingOldSocket = registeredDevices.find(
+        device => device.extensionSocket === this.extensionSocket
+      );
+      
+      if (!activeDeviceUsingOldSocket) {
+        logger.info('Closing unused extension connection');
+        shouldCloseOldConnection = true;
+      } else {
+        logger.info(`Keeping existing connection - used by device: ${activeDeviceUsingOldSocket.deviceId}`);
+      }
+    }
+    
+    if (shouldCloseOldConnection && this.extensionSocket) {
       this.extensionSocket.close(1000, 'New connection established');
+      // Remove all listeners from old socket to prevent event conflicts
+      this.extensionSocket.removeAllListeners();
     }
 
+    // Keep the last extension socket for backward compatibility
     this.extensionSocket = ws;
     logger.info('Extension connected');
 
@@ -223,14 +242,17 @@ export class CDPRelayBridge {
     if (message.type === 'ping') {
       logger.info(`← Heartbeat ping from device: ${message.deviceId}`);
       
-      // 维护设备连接池：确保设备在DeviceManager中注册
+      // 维护设备连接池：只有在设备不存在或连接不匹配时才重新注册
       if (message.deviceId && this.extensionSocket) {
-        this.deviceManager.registerDevice(message.deviceId, {
-          name: 'Chrome Extension',
-          version: '1.0.0',
-          userAgent: 'Browser-Go-Extension',
-          timestamp: new Date().toISOString()
-        }, this.extensionSocket);
+        const existingDevice = this.deviceManager.getDevice(message.deviceId);
+        if (!existingDevice || existingDevice.extensionSocket !== this.extensionSocket) {
+          this.deviceManager.registerDevice(message.deviceId, {
+            name: 'Chrome Extension',
+            version: '1.0.0',
+            userAgent: 'Browser-Go-Extension',
+            timestamp: new Date().toISOString()
+          }, this.extensionSocket);
+        }
       }
       
       // Send pong response

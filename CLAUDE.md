@@ -44,7 +44,7 @@ The application consists of several modular components:
   - ESLint is configured via `eslint.config.js` (which uses `FlatCompat` to load `.eslintrc.cjs`).
 - **Run Tests**: Multiple test suites available:
   - `pnpm run test:bridge` - Test CDP bridge functionality (unit test)
-  - `pnpm run test:e2e:script` - Complete end-to-end test with real Chrome and extension
+  - `pnpm run test:e2e` - Complete end-to-end test with real Chrome and extension
   - `pnpm run test:patchright` - Playwright compatibility testing
 - **Manual Testing Environment**: Quick manual testing setup:
   - `pnpm run open:browser` - Launch Chrome with extension loaded for manual testing
@@ -238,7 +238,7 @@ Custom test orchestration system that provides:
 ### Running Individual Tests
 - `pnpm run test:bridge` - Run CDP bridge tests only
 - `pnpm run test:patchright` - Run Playwright compatibility tests  
-- `pnpm run test:e2e:script` - Run complete E2E test suite
+- `pnpm run test:e2e` - Run complete E2E test suite
 - After building: `node dist/test-<name>.js` for any specific test
 
 ## Test Data Management

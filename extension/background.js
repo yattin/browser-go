@@ -80,15 +80,20 @@ class TabShareExtension {
         this.deviceId = result.deviceId;
         debugLog('Loaded existing device ID:', this.deviceId);
       } else {
-        // Generate new device ID
-        this.deviceId = `device-${this.generateUUID()}`;
+        // Generate new device ID with additional uniqueness for testing
+        const uuid = this.generateUUID();
+        const processUnique = Math.random().toString(36).substring(2, 6);
+        this.deviceId = `device-${uuid}-${processUnique}`;
         await chrome.storage.local.set({ deviceId: this.deviceId });
         debugLog('Generated new device ID:', this.deviceId);
       }
     } catch (error) {
       debugLog('Error initializing device ID:', error.message);
-      // Fallback to session-based ID
-      this.deviceId = `device-session-${Date.now()}`;
+      // Fallback to session-based ID with better uniqueness
+      const randomPart = Math.random().toString(36).substring(2, 8);
+      const timePart = Date.now().toString(36);
+      const procPart = (Math.floor(Math.random() * 10000)).toString(36);
+      this.deviceId = `device-session-${timePart}-${randomPart}-${procPart}`;
       debugLog('Using fallback device ID:', this.deviceId);
     }
   }

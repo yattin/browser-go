@@ -176,6 +176,7 @@ class E2ETestRunner {
     
     this.browser = await chromeLauncher.launch({
       chromeFlags: [
+        '--headless=new', // 无头模式
         `--load-extension=${this.config.extensionPath}`,
         '--disable-extensions-except=' + this.config.extensionPath,
         '--user-data-dir=./.runtime/test-e2e-main', // 主测试实例用户数据目录位于 .runtime 内
@@ -682,6 +683,7 @@ class E2ETestRunner {
       try {
         const browser = await chromeLauncher.launch({
           chromeFlags: [
+            '--headless=new', // 无头模式
             `--load-extension=${this.config.extensionPath}`,
             '--disable-extensions-except=' + this.config.extensionPath,
             '--disable-features=VizDisplayCompositor',
@@ -719,9 +721,7 @@ class E2ETestRunner {
       
       for (let i = 0; i < Math.min(2, this.registeredDevices.length); i++) {
         const deviceId = this.registeredDevices[i]?.deviceId;
-        const cdpUrl = deviceId 
-          ? `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${deviceId}`
-          : `ws://127.0.0.1:${this.config.serverPort}/cdp`;
+        const cdpUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${deviceId}`;
         
         promises.push(this.testPlaywrightConnection(cdpUrl, i + 1));
       }

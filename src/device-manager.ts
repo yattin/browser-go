@@ -62,13 +62,15 @@ export class DeviceManager {
       if (existingDevice.extensionSocket.readyState === WebSocket.OPEN) {
         existingDevice.extensionSocket.close(1000, 'New connection established');
       }
+      // Remove all listeners from old socket to prevent race conditions
+      existingDevice.extensionSocket.removeAllListeners();
     }
 
     this.devices.set(deviceId, device);
 
-    // Set up socket cleanup on close
+    // Set up socket cleanup on close with socket matching to prevent race conditions
     extensionSocket.on('close', () => {
-      this.unregisterDevice(deviceId);
+      this.unregisterDevice(deviceId, extensionSocket);
     });
 
     logger.info(`Device registered successfully: ${deviceId} (${deviceInfo.name})`);
@@ -109,6 +111,10 @@ export class DeviceManager {
     const device = this.getDevice(deviceId);
     if (device && device.extensionSocket.readyState === WebSocket.OPEN) {
       return device.extensionSocket;
+    } else if (device && device.extensionSocket.readyState !== WebSocket.OPEN) {
+      // Connection is broken, clean up the device
+      logger.info(`Device ${deviceId} connection is broken (state: ${device.extensionSocket.readyState}), cleaning up`);
+      this.unregisterDevice(deviceId, device.extensionSocket);
     }
     return null;
   }
@@ -116,9 +122,16 @@ export class DeviceManager {
   /**
    * Unregister a device
    */
-  unregisterDevice(deviceId: string): void {
+  unregisterDevice(deviceId: string, socketToMatch?: WebSocket): void {
     const device = this.devices.get(deviceId);
     if (device) {
+      // If socketToMatch is provided, only unregister if it matches
+      // This prevents race conditions where old sockets unregister new devices
+      if (socketToMatch && device.extensionSocket !== socketToMatch) {
+        logger.debug(`Ignoring unregister for device ${deviceId} - socket mismatch`);
+        return;
+      }
+      
       logger.info(`Device unregistered: ${deviceId}`);
       this.devices.delete(deviceId);
     }

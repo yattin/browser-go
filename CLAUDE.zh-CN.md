@@ -44,7 +44,7 @@ Browser-Go 是一个基于 Chrome DevTools Protocol (CDP) 的浏览器管理服�
   - ESLint 通过 `eslint.config.js` 配置（使用 `FlatCompat` 加载 `.eslintrc.cjs`）。
 - **运行测试**：提供多个测试套件：
   - `pnpm run test:bridge` - 测试 CDP 桥接功能（单元测试）
-  - `pnpm run test:e2e:script` - 使用真实 Chrome 和扩展的完整端到端测试
+  - `pnpm run test:e2e` - 使用真实 Chrome 和扩展的完整端到端测试
   - `pnpm run test:patchright` - Playwright 兼容性测试
 - **手动测试环境**：快速手动测试设置：
   - `pnpm run open:browser` - 启动加载了扩展的 Chrome 进行手动测试
@@ -238,7 +238,7 @@ GitHub Actions 自动为所有平台构建 SEA 可执行文件：
 ### 运行单个测试
 - `pnpm run test:bridge` - 仅运行 CDP 桥接测试
 - `pnpm run test:patchright` - 运行 Playwright 兼容性测试
-- `pnpm run test:e2e:script` - 运行完整的 E2E 测试套件
+- `pnpm run test:e2e` - 运行完整的 E2E 测试套件
 - 构建后：`node dist/test-<name>.js` 用于任何特定测试
 
 ## 测试数据管理
