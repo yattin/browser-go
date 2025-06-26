@@ -9,9 +9,9 @@ import { chromium } from 'patchright';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-// const cdpUrl: string = `ws://127.0.0.1:3000/cdp?deviceId=device-016b8bc2-5c82-44fd-a6d3-a377aad38a4d`;
+const cdpUrl: string = `ws://127.0.0.1:3000/cdp?deviceId=device-0d6dbdce-49bd-4161-b542-c9bc91ee9e10`;
 
-const cdpUrl: string = `ws://127.0.0.1:3000/cdp`;
+// const cdpUrl: string = `ws://127.0.0.1:3000/cdp`;
 
 console.log(`🔗 Connecting to CDP endpoint: ${cdpUrl}`);
 console.log('📝 Make sure you have a browser extension connected to /extension endpoint');

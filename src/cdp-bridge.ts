@@ -14,12 +14,22 @@ interface ConnectionInfo {
   sessionId: string;
 }
 
+interface CDPConnection {
+  socket: WebSocket;
+  deviceId: string | undefined;
+  connectionId: string;
+  connectionInfo?: ConnectionInfo;
+}
+
 export class CDPRelayBridge {
-  private playwrightSocket: WebSocket | null = null;
+  private playwrightSocket: WebSocket | null = null; // 保留用于向后兼容
   private extensionSocket: WebSocket | null = null;
-  private connectionInfo: ConnectionInfo | undefined;
+  private connectionInfo: ConnectionInfo | undefined; // 保留用于向后兼容
   private deviceManager: DeviceManager;
   private config: AppConfig;
+  private currentDeviceId: string | undefined; // 保留用于向后兼容
+  private cdpConnections: Map<string, CDPConnection> = new Map(); // 多设备连接
+  private messageToConnection: Map<string, string> = new Map(); // 消息ID到连接ID的映射
 
   constructor(deviceManager: DeviceManager, config: AppConfig) {
     this.deviceManager = deviceManager;
@@ -30,29 +40,60 @@ export class CDPRelayBridge {
    * Handle CDP client connections (Playwright)
    */
   handleCDPConnection(ws: WebSocket, deviceId?: string): void {
-    // Close previous connection if exists
-    if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
-      logger.info('Closing previous Playwright connection');
-      this.playwrightSocket.close(1000, 'New connection established');
-    }
+    // 生成唯一的连接ID
+    const connectionId = `cdp-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+    
+    // 创建连接对象
+    const connection: CDPConnection = {
+      socket: ws,
+      deviceId,
+      connectionId
+    };
 
-    this.playwrightSocket = ws;
-    logger.info('Playwright connected');
+    // 存储连接
+    this.cdpConnections.set(connectionId, connection);
+    logger.info(`Playwright connected (${connectionId})${deviceId ? ` for device: ${deviceId}` : ''}`);
+
+    // 向后兼容：如果没有其他连接，设置为主连接
+    if (!this.playwrightSocket) {
+      this.playwrightSocket = ws;
+      this.currentDeviceId = deviceId;
+    }
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data.toString());
-        this._handlePlaywrightMessage(message);
+        this._handlePlaywrightMessage(message, connectionId);
       } catch (error) {
         logger.error('Error parsing Playwright message:', error);
       }
     });
 
     ws.on('close', () => {
+      // 清理连接
+      this.cdpConnections.delete(connectionId);
+      logger.info(`Playwright disconnected (${connectionId})`);
+      
+      // 清理该连接相关的消息映射
+      for (const [messageId, connId] of this.messageToConnection.entries()) {
+        if (connId === connectionId) {
+          this.messageToConnection.delete(messageId);
+        }
+      }
+      
+      // 向后兼容：如果是主连接，清理状态
       if (this.playwrightSocket === ws) {
         this.playwrightSocket = null;
+        this.currentDeviceId = undefined;
+        
+        // 尝试选择新的主连接
+        const remaining = Array.from(this.cdpConnections.values());
+        if (remaining.length > 0) {
+          const newMain = remaining[0];
+          this.playwrightSocket = newMain.socket;
+          this.currentDeviceId = newMain.deviceId;
+        }
       }
-      logger.info('Playwright disconnected');
     });
 
     ws.on('error', (error) => {
@@ -143,24 +184,24 @@ export class CDPRelayBridge {
   /**
    * Handle messages from Playwright
    */
-  private _handlePlaywrightMessage(message: any): void {
+  private _handlePlaywrightMessage(message: any, connectionId?: string): void {
     this._logCDPProtocol('←', 'Playwright', 'Bridge', message);
 
     // Handle Browser domain methods locally
     if (message.method?.startsWith('Browser.')) {
-      this._handleBrowserDomainMethod(message);
+      this._handleBrowserDomainMethod(message, connectionId);
       return;
     }
 
     // Handle Target domain methods locally
     if (message.method?.startsWith('Target.')) {
-      this._handleTargetDomainMethod(message);
+      this._handleTargetDomainMethod(message, connectionId);
       return;
     }
 
     // Forward other commands to extension
     if (message.method) {
-      this._forwardToExtension(message);
+      this._forwardToExtension(message, connectionId);
     }
   }
 
@@ -181,6 +222,17 @@ export class CDPRelayBridge {
     // Handle ping messages separately - only log heartbeat info
     if (message.type === 'ping') {
       logger.info(`← Heartbeat ping from device: ${message.deviceId}`);
+      
+      // 维护设备连接池：确保设备在DeviceManager中注册
+      if (message.deviceId && this.extensionSocket) {
+        this.deviceManager.registerDevice(message.deviceId, {
+          name: 'Chrome Extension',
+          version: '1.0.0',
+          userAgent: 'Browser-Go-Extension',
+          timestamp: new Date().toISOString()
+        }, this.extensionSocket);
+      }
+      
       // Send pong response
       if (this.extensionSocket?.readyState === WebSocket.OPEN) {
         const pongMessage = {
@@ -194,15 +246,40 @@ export class CDPRelayBridge {
       return;
     }
 
-    // CDP event from extension
+    // CDP event from extension - 发送给对应的连接
     this._logCDPProtocol('←', 'Extension', 'Bridge', message);
-    this._sendToPlaywright(message);
+    
+    // 如果是响应消息(有id)，找到对应的连接
+    if (message.id) {
+      const targetConnectionId = this.messageToConnection.get(message.id);
+      if (targetConnectionId) {
+        // 发送给发起请求的连接
+        this._sendToPlaywright(message, targetConnectionId);
+        // 清理映射
+        this.messageToConnection.delete(message.id);
+        return;
+      }
+    }
+    
+    // 如果是事件消息(没有id)或找不到对应连接，广播给所有连接
+    let sent = false;
+    for (const connection of this.cdpConnections.values()) {
+      if (connection.socket.readyState === WebSocket.OPEN) {
+        this._sendToPlaywright(message, connection.connectionId);
+        sent = true;
+      }
+    }
+    
+    // 如果没有多设备连接，使用向后兼容模式
+    if (!sent) {
+      this._sendToPlaywright(message);
+    }
   }
 
   /**
    * Handle Browser domain methods locally
    */
-  private _handleBrowserDomainMethod(message: any): void {
+  private _handleBrowserDomainMethod(message: any, connectionId?: string): void {
     switch (message.method) {
       case 'Browser.getVersion':
         this._sendToPlaywright({
@@ -212,18 +289,18 @@ export class CDPRelayBridge {
             product: 'Chrome/Extension-Bridge',
             userAgent: 'Browser-Go-Extension-Bridge/1.0.0',
           }
-        });
+        }, connectionId);
         break;
 
       case 'Browser.setDownloadBehavior':
         this._sendToPlaywright({
           id: message.id,
           result: {}
-        });
+        }, connectionId);
         break;
 
       default:
-        this._forwardToExtension(message);
+        this._forwardToExtension(message, connectionId);
     }
   }
 
@@ -231,55 +308,100 @@ export class CDPRelayBridge {
   /**
    * Handle Target domain methods locally
    */
-  private _handleTargetDomainMethod(message: any): void {
+  private _handleTargetDomainMethod(message: any, connectionId?: string): void {
+    // 获取连接的connectionInfo，如果有多设备连接则使用对应连接的信息
+    let connectionInfo = this.connectionInfo;
+    if (connectionId) {
+      const connection = this.cdpConnections.get(connectionId);
+      if (connection?.connectionInfo) {
+        connectionInfo = connection.connectionInfo;
+      }
+    }
+
     switch (message.method) {
       case 'Target.setAutoAttach':
         // Simulate auto-attach behavior with real target info
-        if (this.connectionInfo && !message.sessionId) {
+        if (connectionInfo && !message.sessionId) {
           logger.info('Simulating auto-attach for target:', JSON.stringify(message));
           this._sendToPlaywright({
             method: 'Target.attachedToTarget',
             params: {
-              sessionId: this.connectionInfo.sessionId,
+              sessionId: connectionInfo.sessionId,
               targetInfo: {
-                ...this.connectionInfo.targetInfo,
+                ...connectionInfo.targetInfo,
                 attached: true,
               },
               waitingForDebugger: false
             }
-          });
+          }, connectionId);
           this._sendToPlaywright({
             id: message.id,
             result: {}
-          });
+          }, connectionId);
         } else {
-          this._forwardToExtension(message);
+          this._forwardToExtension(message, connectionId);
         }
         break;
 
       case 'Target.getTargets':
         const targetInfos = [];
-        if (this.connectionInfo) {
+        if (connectionInfo) {
           targetInfos.push({
-            ...this.connectionInfo.targetInfo,
+            ...connectionInfo.targetInfo,
             attached: true,
           });
         }
         this._sendToPlaywright({
           id: message.id,
           result: { targetInfos }
-        });
+        }, connectionId);
         break;
 
       default:
-        this._forwardToExtension(message);
+        this._forwardToExtension(message, connectionId);
     }
   }
 
   /**
    * Forward message to Chrome extension
    */
-  private _forwardToExtension(message: any): void {
+  private _forwardToExtension(message: any, connectionId?: string): void {
+    // 记录消息ID到连接ID的映射，用于响应时路由
+    if (message.id && connectionId) {
+      this.messageToConnection.set(message.id, connectionId);
+    }
+
+    // 获取当前连接的设备ID
+    let targetDeviceId = this.currentDeviceId;
+    if (connectionId) {
+      const connection = this.cdpConnections.get(connectionId);
+      if (connection) {
+        targetDeviceId = connection.deviceId;
+      }
+    }
+
+    // Use device routing if deviceId is specified
+    if (targetDeviceId) {
+      const deviceSocket = this.deviceManager.getDeviceSocket(targetDeviceId);
+      if (deviceSocket) {
+        this._logCDPProtocol('→', 'Bridge', `Extension(${targetDeviceId})`, message);
+        deviceSocket.send(JSON.stringify(message));
+        return;
+      } else {
+        logger.info(`Device ${targetDeviceId} not connected, cannot forward message`);
+        if (message.id) {
+          this._sendToPlaywright({
+            id: message.id,
+            error: { message: `Device ${targetDeviceId} not connected` }
+          }, connectionId);
+          // 清理映射
+          this.messageToConnection.delete(message.id);
+        }
+        return;
+      }
+    }
+
+    // Fallback to direct extension socket for backward compatibility
     if (this.extensionSocket?.readyState === WebSocket.OPEN) {
       this._logCDPProtocol('→', 'Bridge', 'Extension', message);
       this.extensionSocket.send(JSON.stringify(message));
@@ -289,7 +411,11 @@ export class CDPRelayBridge {
         this._sendToPlaywright({
           id: message.id,
           error: { message: 'Extension not connected' }
-        });
+        }, connectionId);
+        // 清理映射
+        if (connectionId) {
+          this.messageToConnection.delete(message.id);
+        }
       }
     }
   }
@@ -297,7 +423,18 @@ export class CDPRelayBridge {
   /**
    * Forward message to Playwright
    */
-  private _sendToPlaywright(message: any): void {
+  private _sendToPlaywright(message: any, connectionId?: string): void {
+    // 如果指定了connectionId，发送给特定连接
+    if (connectionId) {
+      const connection = this.cdpConnections.get(connectionId);
+      if (connection?.socket.readyState === WebSocket.OPEN) {
+        this._logCDPProtocol('→', 'Bridge', `Playwright(${connectionId})`, message);
+        connection.socket.send(JSON.stringify(message));
+        return;
+      }
+    }
+
+    // 向后兼容：发送给主连接
     if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
       this._logCDPProtocol('→', 'Bridge', 'Playwright', message);
       this.playwrightSocket.send(JSON.stringify(message));
@@ -310,10 +447,21 @@ export class CDPRelayBridge {
   getStats(): {
     playwrightConnected: boolean;
     extensionConnected: boolean;
+    cdpConnections: number;
+    activeDevices: string[];
   } {
+    const activeConnections = Array.from(this.cdpConnections.values())
+      .filter(conn => conn.socket.readyState === WebSocket.OPEN);
+    
+    const activeDevices = activeConnections
+      .map(conn => conn.deviceId)
+      .filter(id => id) as string[];
+
     return {
       playwrightConnected: this.playwrightSocket?.readyState === WebSocket.OPEN,
       extensionConnected: this.extensionSocket?.readyState === WebSocket.OPEN,
+      cdpConnections: activeConnections.length,
+      activeDevices: [...new Set(activeDevices)], // 去重
     };
   }
 
@@ -323,7 +471,19 @@ export class CDPRelayBridge {
   shutdown(): void {
     logger.info('Shutting down CDP bridge...');
     
-    // Close Playwright socket
+    // Close all CDP connections
+    for (const [connectionId, connection] of this.cdpConnections.entries()) {
+      if (connection.socket.readyState === WebSocket.OPEN) {
+        logger.info(`Closing CDP connection: ${connectionId}`);
+        connection.socket.close(1000, 'Server shutdown');
+      }
+    }
+    this.cdpConnections.clear();
+    
+    // Clear message mappings
+    this.messageToConnection.clear();
+    
+    // Close Playwright socket (backward compatibility)
     if (this.playwrightSocket?.readyState === WebSocket.OPEN) {
       this.playwrightSocket.close(1000, 'Server shutdown');
       this.playwrightSocket = null;

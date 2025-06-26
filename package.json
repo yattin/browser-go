@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "start": "node dist/cli.js",
-    "test:bridge": "node dist/test-bridge.js",
+    "test:bridge": "pnpm run build && node dist/test-bridge.js",
     "test:e2e:script": "scripts/run-e2e-test.sh",
     "test:patchright": "pnpm run build && node dist/test-patchright.js",
     "open:browser": "pnpm run build && node dist/open-browser.js",

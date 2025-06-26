@@ -120,6 +120,7 @@ class PlaywrightCompatibilityTest {
       chromeFlags: [
         `--load-extension=${this.config.extensionPath}`,
         '--disable-extensions-except=' + this.config.extensionPath,
+        '--user-data-dir=./.runtime/test-patchright', // 用户数据目录位于 .runtime 内
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
         '--no-first-run',

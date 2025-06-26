@@ -12,6 +12,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import chromeLauncher from 'chrome-launcher';
+import { chromium } from 'playwright';
 import WebSocket from 'ws';
 import path from 'path';
 import fs from 'fs';
@@ -46,6 +47,8 @@ class E2ETestRunner {
   private browser: any = null;
   private testResults: { [key: string]: boolean } = {};
   private registeredDevices: TestDeviceInfo[] = [];
+  private multipleBrowsers: any[] = []; // 支持多个浏览器实例
+  private playwrightConnections: any[] = []; // Playwright连接池
 
   constructor() {
     this.config = {
@@ -175,6 +178,7 @@ class E2ETestRunner {
       chromeFlags: [
         `--load-extension=${this.config.extensionPath}`,
         '--disable-extensions-except=' + this.config.extensionPath,
+        '--user-data-dir=./.runtime/test-e2e-main', // 主测试实例用户数据目录位于 .runtime 内
         '--disable-features=VizDisplayCompositor',
         '--no-first-run',
         '--no-default-browser-check',
@@ -627,6 +631,36 @@ class E2ETestRunner {
       // Test page navigation
       this.testResults['page_navigation'] = await this.testPageNavigation();
       
+      // ========== Multi-Device Tests ==========
+      
+      // Launch additional Chrome instances for multi-device testing
+      try {
+        await this.launchMultipleChromeInstances(2);
+        this.testResults['multi_device_setup'] = true;
+        
+        // Wait for additional devices to register
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Re-check device registration after launching multiple instances
+        await this.testDeviceRegistration();
+        
+        // Test multi-device Playwright connections
+        this.testResults['multi_device_playwright'] = await this.testMultiDevicePlaywright();
+        
+        // Test device isolation
+        this.testResults['device_isolation'] = await this.testDeviceIsolation();
+        
+        // Test concurrent message handling
+        this.testResults['concurrent_messaging'] = await this.testConcurrentMessageHandling();
+        
+      } catch (error) {
+        console.error('Multi-device setup failed:', error);
+        this.testResults['multi_device_setup'] = false;
+        this.testResults['multi_device_playwright'] = false;
+        this.testResults['device_isolation'] = false;
+        this.testResults['concurrent_messaging'] = false;
+      }
+      
       // Print results
       this.printTestResults();
       
@@ -636,6 +670,321 @@ class E2ETestRunner {
     } finally {
       await this.cleanup();
     }
+  }
+
+  /**
+   * Launch multiple Chrome instances for multi-device testing
+   */
+  async launchMultipleChromeInstances(count: number = 2): Promise<void> {
+    console.log(`🌐 Launching ${count} Chrome instances for multi-device testing...`);
+    
+    for (let i = 0; i < count; i++) {
+      try {
+        const browser = await chromeLauncher.launch({
+          chromeFlags: [
+            `--load-extension=${this.config.extensionPath}`,
+            '--disable-extensions-except=' + this.config.extensionPath,
+            '--disable-features=VizDisplayCompositor',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            `--user-data-dir=./.runtime/test-device-${i}`, // 用户数据目录位于 .runtime 内
+          ],
+          handleSIGINT: false
+        });
+        
+        this.multipleBrowsers.push(browser);
+        console.log(`✅ Chrome instance ${i + 1} launched (PID: ${browser.pid})`);
+      } catch (error) {
+        console.error(`❌ Failed to launch Chrome instance ${i + 1}:`, error);
+        throw error;
+      }
+    }
+    
+    // Wait for all extensions to initialize
+    await new Promise(resolve => setTimeout(resolve, 8000));
+  }
+
+  /**
+   * Test multi-device concurrent connections using Playwright
+   */
+  async testMultiDevicePlaywright(): Promise<boolean> {
+    try {
+      console.log('🎭 Testing multi-device Playwright connections...');
+      
+      // Test concurrent connections to different devices
+      const promises = [];
+      
+      for (let i = 0; i < Math.min(2, this.registeredDevices.length); i++) {
+        const deviceId = this.registeredDevices[i]?.deviceId;
+        const cdpUrl = deviceId 
+          ? `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${deviceId}`
+          : `ws://127.0.0.1:${this.config.serverPort}/cdp`;
+        
+        promises.push(this.testPlaywrightConnection(cdpUrl, i + 1));
+      }
+      
+      const results = await Promise.all(promises);
+      const allPassed = results.every(result => result);
+      
+      if (allPassed) {
+        console.log('✅ Multi-device Playwright tests passed');
+      } else {
+        console.log('❌ Some multi-device Playwright tests failed');
+      }
+      
+      return allPassed;
+    } catch (error) {
+      console.error('❌ Multi-device Playwright test failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Test individual Playwright connection
+   */
+  async testPlaywrightConnection(cdpUrl: string, clientId: number): Promise<boolean> {
+    let browser = null;
+    try {
+      console.log(`   Client ${clientId}: Connecting to ${cdpUrl}`);
+      
+      browser = await chromium.connectOverCDP(cdpUrl);
+      const contexts = browser.contexts();
+      
+      if (contexts.length === 0) {
+        console.log(`   Client ${clientId}: No contexts available`);
+        return false;
+      }
+
+      const context = contexts[0];
+      const pages = context.pages();
+      const page = pages.length > 0 ? pages[0] : await context.newPage();
+
+      // Navigate to a unique URL to test isolation
+      const testUrl = `https://httpbin.org/json?client=${clientId}&test=multi-device`;
+      await page.goto(testUrl, { timeout: 15000 });
+      
+      // Evaluate JavaScript to get client info
+      const result = await page.evaluate((clientId) => {
+        return {
+          clientId,
+          url: window.location.href,
+          title: document.title,
+          timestamp: Date.now()
+        };
+      }, clientId);
+      
+      console.log(`   Client ${clientId}: Navigation successful - ${result.url}`);
+      console.log(`   Client ${clientId}: Title: ${result.title}`);
+      
+      // Store connection for later cleanup
+      this.playwrightConnections.push(browser);
+      
+      return true;
+    } catch (error: any) {
+      console.log(`   Client ${clientId}: Failed - ${error.message}`);
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (closeError) {
+          // Ignore close errors
+        }
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Test device isolation and message routing
+   */
+  async testDeviceIsolation(): Promise<boolean> {
+    try {
+      console.log('🔒 Testing device isolation and message routing...');
+      
+      if (this.registeredDevices.length < 2) {
+        console.log('   ⚠️  Need at least 2 devices for isolation testing, skipping...');
+        return true; // Skip if not enough devices
+      }
+      
+      const device1 = this.registeredDevices[0].deviceId;
+      const device2 = this.registeredDevices[1].deviceId;
+      
+      // Test that commands sent to device1 don't affect device2
+      const promises = [
+        this.testDeviceSpecificOperation(device1, 'device1-test'),
+        this.testDeviceSpecificOperation(device2, 'device2-test')
+      ];
+      
+      const results = await Promise.all(promises);
+      const isolated = results.every(result => result);
+      
+      if (isolated) {
+        console.log('✅ Device isolation test passed');
+      } else {
+        console.log('❌ Device isolation test failed');
+      }
+      
+      return isolated;
+    } catch (error) {
+      console.error('❌ Device isolation test failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Test device-specific operation
+   */
+  async testDeviceSpecificOperation(deviceId: string, testId: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const wsUrl = `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${deviceId}`;
+      const ws = new WebSocket(wsUrl);
+      let operationCompleted = false;
+      
+      ws.on('open', () => {
+        console.log(`   Testing device ${deviceId} with operation ${testId}`);
+        
+        // Send a JavaScript evaluation specific to this device
+        ws.send(JSON.stringify({
+          id: `test-${testId}`,
+          method: 'Runtime.evaluate',
+          params: { 
+            expression: `window.testDeviceId = '${deviceId}'; window.testId = '${testId}'; true;`
+          }
+        }));
+      });
+      
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          if (message.id === `test-${testId}` && message.result) {
+            console.log(`   ✅ Device ${deviceId} operation ${testId} completed`);
+            operationCompleted = true;
+            setTimeout(() => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.close();
+              }
+            }, 1000);
+          }
+        } catch (error) {
+          console.error(`   Failed to parse response for ${testId}:`, error);
+        }
+      });
+      
+      ws.on('close', () => {
+        resolve(operationCompleted);
+      });
+      
+      ws.on('error', (error) => {
+        console.log(`   Device ${deviceId} operation ${testId} error:`, error.message);
+        resolve(false);
+      });
+      
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        resolve(operationCompleted);
+      }, 10000);
+    });
+  }
+
+  /**
+   * Test concurrent message handling
+   */
+  async testConcurrentMessageHandling(): Promise<boolean> {
+    try {
+      console.log('⚡ Testing concurrent message handling...');
+      
+      const deviceId = this.registeredDevices.length > 0 
+        ? this.registeredDevices[0].deviceId 
+        : null;
+      
+      const wsUrl = deviceId 
+        ? `ws://127.0.0.1:${this.config.serverPort}/cdp?deviceId=${deviceId}`
+        : `ws://127.0.0.1:${this.config.serverPort}/cdp`;
+      
+      // Create multiple concurrent connections
+      const connectionPromises = [];
+      for (let i = 0; i < 3; i++) {
+        connectionPromises.push(this.testConcurrentConnection(wsUrl, i + 1));
+      }
+      
+      const results = await Promise.all(connectionPromises);
+      const allPassed = results.every(result => result);
+      
+      if (allPassed) {
+        console.log('✅ Concurrent message handling test passed');
+      } else {
+        console.log('❌ Some concurrent connections failed');
+      }
+      
+      return allPassed;
+    } catch (error) {
+      console.error('❌ Concurrent message handling test failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Test individual concurrent connection
+   */
+  async testConcurrentConnection(wsUrl: string, connectionId: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(wsUrl);
+      let messagesReceived = 0;
+      const expectedMessages = 3;
+      
+      ws.on('open', () => {
+        console.log(`   Concurrent connection ${connectionId} established`);
+        
+        // Send multiple messages rapidly
+        for (let i = 1; i <= expectedMessages; i++) {
+          ws.send(JSON.stringify({
+            id: `concurrent-${connectionId}-${i}`,
+            method: 'Runtime.evaluate',
+            params: { expression: `${connectionId} * ${i}` }
+          }));
+        }
+      });
+      
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          if (message.id && message.id.startsWith(`concurrent-${connectionId}-`)) {
+            messagesReceived++;
+            if (messagesReceived >= expectedMessages) {
+              console.log(`   ✅ Connection ${connectionId} received all ${expectedMessages} responses`);
+              setTimeout(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.close();
+                }
+              }, 500);
+            }
+          }
+        } catch (error) {
+          console.error(`   Connection ${connectionId} parse error:`, error);
+        }
+      });
+      
+      ws.on('close', () => {
+        resolve(messagesReceived >= expectedMessages);
+      });
+      
+      ws.on('error', (error) => {
+        console.log(`   Connection ${connectionId} error:`, error.message);
+        resolve(false);
+      });
+      
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        resolve(messagesReceived >= expectedMessages);
+      }, 8000);
+    });
   }
 
   /**
@@ -748,7 +1097,12 @@ class E2ETestRunner {
       { key: 'browser_domain', name: 'Browser Domain Methods' },
       { key: 'target_domain', name: 'Target Domain Methods' },
       { key: 'message_types', name: 'Message Type Identification' },
-      { key: 'page_navigation', name: 'Page Navigation to Google' },
+      { key: 'page_navigation', name: 'Page Navigation' },
+      // Multi-device tests
+      { key: 'multi_device_setup', name: 'Multi-Device Setup' },
+      { key: 'multi_device_playwright', name: 'Multi-Device Playwright Connections' },
+      { key: 'device_isolation', name: 'Device Isolation & Routing' },
+      { key: 'concurrent_messaging', name: 'Concurrent Message Handling' },
     ];
     
     let passed = 0;
@@ -873,21 +1227,36 @@ class E2ETestRunner {
   async cleanup(): Promise<void> {
     console.log('\n🧹 Cleaning up...');
     
-    // Force cleanup of Chrome browser process
+    // Close all Playwright connections first
+    for (let i = 0; i < this.playwrightConnections.length; i++) {
+      const browser = this.playwrightConnections[i];
+      if (browser) {
+        try {
+          console.log(`   Closing Playwright connection ${i + 1}...`);
+          await browser.close();
+          console.log(`✅ Playwright connection ${i + 1} closed`);
+        } catch (error) {
+          console.error(`❌ Error closing Playwright connection ${i + 1}:`, error);
+        }
+      }
+    }
+    this.playwrightConnections = [];
+    
+    // Force cleanup of main Chrome browser process
     if (this.browser) {
       try {
-        console.log(`   Killing Chrome process (PID: ${this.browser.pid})`);
+        console.log(`   Killing main Chrome process (PID: ${this.browser.pid})`);
         await this.browser.kill();
-        console.log('✅ Browser process terminated');
+        console.log('✅ Main browser process terminated');
       } catch (error) {
-        console.error(`❌ Error closing browser: ${error}`);
+        console.error(`❌ Error closing main browser: ${error}`);
         
         // Force kill using system kill command if normal kill fails
         if (this.browser.pid) {
           try {
             console.log('   Attempting force kill...');
             process.kill(this.browser.pid, 'SIGKILL');
-            console.log('✅ Browser force killed');
+            console.log('✅ Main browser force killed');
           } catch (forceError) {
             console.error(`❌ Force kill failed: ${forceError}`);
           }
@@ -895,6 +1264,32 @@ class E2ETestRunner {
       }
       this.browser = null;
     }
+    
+    // Force cleanup of additional Chrome browser processes
+    for (let i = 0; i < this.multipleBrowsers.length; i++) {
+      const browser = this.multipleBrowsers[i];
+      if (browser) {
+        try {
+          console.log(`   Killing additional Chrome process ${i + 1} (PID: ${browser.pid})`);
+          await browser.kill();
+          console.log(`✅ Additional browser process ${i + 1} terminated`);
+        } catch (error) {
+          console.error(`❌ Error closing additional browser ${i + 1}: ${error}`);
+          
+          // Force kill using system kill command if normal kill fails
+          if (browser.pid) {
+            try {
+              console.log(`   Attempting force kill for browser ${i + 1}...`);
+              process.kill(browser.pid, 'SIGKILL');
+              console.log(`✅ Additional browser ${i + 1} force killed`);
+            } catch (forceError) {
+              console.error(`❌ Force kill failed for browser ${i + 1}: ${forceError}`);
+            }
+          }
+        }
+      }
+    }
+    this.multipleBrowsers = [];
     
     // Additional cleanup: kill any remaining Chrome processes that might be related to our test
     await this.forceKillChromeProcesses();

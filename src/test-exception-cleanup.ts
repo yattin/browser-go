@@ -164,6 +164,7 @@ class ExceptionCleanupTest {
       chromeFlags: [
         `--load-extension=${this.extensionPath}`,
         '--disable-extensions-except=' + this.extensionPath,
+        '--user-data-dir=./.runtime/test-exception-cleanup', // 用户数据目录位于 .runtime 内
         '--disable-features=VizDisplayCompositor',
         '--no-first-run',
         '--no-default-browser-check',
