@@ -27,4 +27,4 @@ test-*.png
 
 .vscode
 .runtime
-
+.test_result

@@ -45,7 +45,14 @@ The application consists of several modular components:
 - **Run Tests**: Multiple test suites available:
   - `pnpm run test:bridge` - Test CDP bridge functionality (unit test)
   - `pnpm run test:e2e` - Complete end-to-end test with real Chrome and extension
+  - `pnpm run test:e2e:simple` - Simplified E2E test with Bing search and screenshots (recommended for CI/CD)
+  - `pnpm run test:e2e:clean` - E2E test with automatic cleanup
+  - `pnpm run test:safe` - Enhanced test runner with automatic cleanup
   - `pnpm run test:patchright` - Playwright compatibility testing
+- **Test Environment Cleanup**: Clean up leftover processes and resources:
+  - `pnpm run cleanup` - Clean up ports, processes, and temporary files
+  - `scripts/cleanup-test-env.sh` - Direct cleanup script execution
+  - `scripts/test-with-cleanup.sh` - Enhanced test runner with automatic cleanup
 - **Manual Testing Environment**: Quick manual testing setup:
   - `pnpm run open:browser` - Launch Chrome with extension loaded for manual testing
 - **Start Application**: `pnpm run start` or `node dist/cli.js [options]`
