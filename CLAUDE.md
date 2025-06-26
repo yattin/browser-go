@@ -42,14 +42,21 @@ The application consists of several modular components:
     - `pnpm run lint`: Checks for linting issues.
     - `pnpm run lint:fix`: Checks and attempts to automatically fix linting issues.
   - ESLint is configured via `eslint.config.js` (which uses `FlatCompat` to load `.eslintrc.cjs`).
-- **Run Tests**: Two core test suites available:
+- **Run Tests**: Multiple test suites available:
   - `pnpm run test:bridge` - Test CDP bridge functionality (unit test)
   - `pnpm run test:e2e:script` - Complete end-to-end test with real Chrome and extension
+  - `pnpm run test:patchright` - Playwright compatibility testing
 - **Manual Testing Environment**: Quick manual testing setup:
   - `pnpm run open:browser` - Launch Chrome with extension loaded for manual testing
-- **Start Application**: `pnpm run start`
-  - This command executes the compiled main application script at `dist/cli.js`.
-  - Alternatively, after building: `node dist/cli.js [options]`
+- **Start Application**: `pnpm run start` or `node dist/cli.js [options]`
+  - **Command Line Options**:
+    - `--port=<number>` - Server port (default: 3000)
+    - `--max-instances=<number>` - Maximum concurrent instances (default: 10)
+    - `--instance-timeout=<minutes>` - Instance timeout in minutes (default: 60)
+    - `--inactive-check-interval=<minutes>` - Cleanup interval in minutes (default: 5)
+    - `--token=<string>` - Access token (default: 'browser-go-token')
+    - `--cdp-logging` - Enable detailed CDP protocol logging
+    - `--help` - Show help information
 - **Type Check**: `pnpm run build` (as it runs `tsc`) or `npx tsc --noEmit` for a dry run.
 
 ## Binary Generation Commands
@@ -157,8 +164,10 @@ The project includes a Chrome extension (`extension/`) that provides device regi
 - `GET /api/v1/browser/stop?user_id=<id>` - Stop specific browser instance
 - `GET /api/v1/browser/list` - List all active instances with activity data
 - `GET /api/v1/browser/stats` - System statistics and configuration
+- `GET /api/v1/devices` - List registered devices (for multi-device support)
 - `GET /api-docs` - Swagger UI documentation
 - `GET /openapi.json` - OpenAPI specification
+- `ws://localhost:3000/cdp?deviceId=<id>` - CDP WebSocket connection with device routing
 
 ## Code Style Guidelines
 
@@ -220,16 +229,53 @@ Custom test orchestration system that provides:
 - Individual test suite execution
 
 ### Test Files Structure
-- `test.ts` - Basic functionality tests
-- `test-bridge.ts` - CDP bridge testing
-- `test-extension.ts` - Chrome extension integration tests
-- `test-device-*.ts` - Device management system tests
-- `test-api-endpoints.ts` - REST API endpoint tests
-- `test-heartbeat.ts` - Ping/pong heartbeat mechanism tests
-- `test-runner.ts` - Test orchestration and reporting
+- `test-bridge.ts` - CDP bridge functionality testing
+- `test-e2e-complete.ts` - Complete end-to-end testing with multi-device support and Playwright integration
+- `test-patchright.ts` - Playwright compatibility testing
+- `test-cleanup.ts` - Browser process cleanup mechanism testing
+- `test-exception-cleanup.ts` - Exception handling and cleanup validation
+
+### Running Individual Tests
+- `pnpm run test:bridge` - Run CDP bridge tests only
+- `pnpm run test:patchright` - Run Playwright compatibility tests  
+- `pnpm run test:e2e:script` - Run complete E2E test suite
+- After building: `node dist/test-<name>.js` for any specific test
+
+## Test Data Management
+
+All test files use isolated user data directories within `.runtime/` to prevent cross-test contamination:
+- Main E2E tests: `.runtime/test-e2e-main/`
+- Multi-device tests: `.runtime/test-device-0/`, `.runtime/test-device-1/`, etc.
+- Playwright tests: `.runtime/test-patchright/`
+- Cleanup tests: `.runtime/test-cleanup/`
+- Exception tests: `.runtime/test-exception-cleanup/`
+- Manual testing: `.runtime/` (via `pnpm run open:browser`)
+
+The `.runtime` directory is git-ignored and automatically cleaned up during tests.
+
+## Multi-Device Architecture
+
+The CDP bridge supports multiple concurrent device connections with proper message routing:
+
+### Key Components
+- **CDPRelayBridge** (`src/cdp-bridge.ts`): Manages multiple CDP connections with request-response mapping
+- **DeviceManager** (`src/device-manager.ts`): Handles device registration and connection routing
+- **Message Routing**: Responses are sent only to the originating connection, not broadcasted
+
+### Multi-Device Message Flow
+1. **Device Registration**: Chrome extensions register with unique device IDs via WebSocket
+2. **Connection Mapping**: Each CDP connection is mapped to a specific device ID
+3. **Request Tracking**: Message IDs are mapped to connection IDs for proper response routing
+4. **Heartbeat Maintenance**: Ping/pong messages automatically maintain device registration
+
+### Critical Implementation Notes
+- `_handleBrowserDomainMethod` and `_handleTargetDomainMethod` handle local CDP operations
+- Device addressing is the only addition to core CDP methods - other logic should remain unchanged
+- Heartbeat pings automatically register/update devices in DeviceManager
 
 ## Error Handling Patterns
 
 - WebSocket errors are handled gracefully with proper socket cleanup
 - Chrome instance failures trigger automatic cleanup of cached instances
 - All API endpoints return consistent JSON response format with `code`, `msg`, and optional `data` fields
+- Multi-device routing failures return specific error messages to the requesting connection
