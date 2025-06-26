@@ -61,6 +61,7 @@ export interface AppConfig {
   token: string;
   cdpLogging: boolean; // Enable detailed CDP protocol logging for debugging
   port?: number; // Server port number
+  v2?: boolean; // Enable V2 WebSocket architecture
 }
 
 // For chromeLauncher options in cli.ts

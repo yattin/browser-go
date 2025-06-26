@@ -18,6 +18,12 @@ import { ChromeManager } from './chrome-manager.js';
 import { WebSocketHandlers } from './websocket-handlers.js';
 import { ApiRoutes } from './api-routes.js';
 
+// V2 Architecture Components
+import { V2DeviceRegistry } from './v2-device-registry.js';
+import { V2MessageRouter } from './v2-message-router.js';
+import { V2WebSocketHandlers } from './v2-websocket-handlers.js';
+import { V2Config } from './v2-types.js';
+
 // Initialize configuration
 const config = getAppConfig();
 const app: Application = express();
@@ -47,10 +53,47 @@ app.get('/openapi.json', (_req, res) => {
 
 // Initialize core components
 const chromeManager = new ChromeManager(config);
-const deviceManager = new DeviceManager();
-const cdpRelayBridge = new CDPRelayBridge(deviceManager, config);
-const webSocketHandlers = new WebSocketHandlers(cdpRelayBridge, chromeManager, deviceManager, config.token);
-const apiRoutes = new ApiRoutes(chromeManager, deviceManager);
+
+// Initialize WebSocket architecture based on configuration
+let webSocketHandlers: WebSocketHandlers | V2WebSocketHandlers;
+let deviceManager: DeviceManager | V2DeviceRegistry;
+let messageRouter: V2MessageRouter | undefined;
+let cdpRelayBridge: CDPRelayBridge | undefined;
+
+if (config.v2) {
+  logger.info('Initializing V2 WebSocket architecture...');
+  
+  // V2 Configuration
+  const v2Config: V2Config = {
+    heartbeatInterval: 30000, // 30 seconds
+    connectionTimeout: 60000, // 1 minute
+    messageTimeout: 10000, // 10 seconds
+    maxQueueSize: 1000,
+    maxRetries: 3,
+    retryDelay: 1000,
+    maxConcurrentConnections: config.maxInstances,
+    maxConcurrentMessages: 50,
+    metricsInterval: 5000,
+    enableDetailedLogging: config.cdpLogging
+  };
+  
+  deviceManager = new V2DeviceRegistry(v2Config);
+  messageRouter = new V2MessageRouter(deviceManager, v2Config);
+  webSocketHandlers = new V2WebSocketHandlers(deviceManager, messageRouter, v2Config);
+  
+  logger.info('V2 WebSocket architecture initialized');
+} else {
+  logger.info('Initializing V1 WebSocket architecture...');
+  
+  const v1DeviceManager = new DeviceManager();
+  cdpRelayBridge = new CDPRelayBridge(v1DeviceManager, config);
+  webSocketHandlers = new WebSocketHandlers(cdpRelayBridge, chromeManager, v1DeviceManager, config.token);
+  deviceManager = v1DeviceManager;
+  
+  logger.info('V1 WebSocket architecture initialized');
+}
+
+const apiRoutes = new ApiRoutes(chromeManager, deviceManager as DeviceManager);
 
 // Setup API routes
 apiRoutes.setupRoutes(app);
@@ -60,7 +103,47 @@ const server: Server = http.createServer(app);
 
 // Setup WebSocket upgrade handling
 server.on('upgrade', async (req, socket, head) => {
-  await webSocketHandlers.handleUpgrade(req, socket, head);
+  if (config.v2) {
+    // V2 architecture uses direct WebSocket server with routing
+    // Handled by V2WebSocketHandlers during initialization
+    const { WebSocketServer } = await import('ws');
+    const wss = new WebSocketServer({ noServer: true });
+    
+    wss.handleUpgrade(req, socket, head, async (ws) => {
+      try {
+        const url = new URL(req.url!, `http://${req.headers.host}`);
+        const pathSegments = url.pathname.split('/').filter(Boolean);
+        
+        if (pathSegments.length >= 2 && pathSegments[0] === 'v2') {
+          const endpoint = pathSegments[1];
+          const v2Handlers = webSocketHandlers as V2WebSocketHandlers;
+          
+          switch (endpoint) {
+            case 'device':
+              await v2Handlers.handleDeviceEndpoint(ws, req);
+              break;
+            case 'cdp':
+              await v2Handlers.handleCDPEndpoint(ws, req);
+              break;
+            case 'control':
+              await v2Handlers.handleControlEndpoint(ws, req);
+              break;
+            default:
+              ws.close(4000, `Unknown V2 endpoint: ${endpoint}`);
+          }
+        } else {
+          ws.close(4000, 'Invalid V2 path - use /v2/{device|cdp|control}');
+        }
+      } catch (error) {
+        logger.error('V2 WebSocket upgrade error:', error);
+        ws.close(4001, 'V2 WebSocket upgrade failed');
+      }
+    });
+  } else {
+    // V1 architecture uses original upgrade handling
+    const v1Handlers = webSocketHandlers as WebSocketHandlers;
+    await v1Handlers.handleUpgrade(req, socket, head);
+  }
 });
 
 // Graceful shutdown handling
@@ -92,15 +175,34 @@ async function gracefulShutdown(signal: string): Promise<void> {
     await chromeManager.shutdown();
     logger.info('Chrome manager shutdown completed');
     
-    // Shutdown Device manager
-    logger.info('Shutting down Device manager...');
-    deviceManager.shutdown();
-    logger.info('Device manager shutdown completed');
-    
-    // Shutdown CDP bridge
-    logger.info('Shutting down CDP bridge...');
-    cdpRelayBridge.shutdown();
-    logger.info('CDP bridge shutdown completed');
+    // Shutdown WebSocket components
+    if (config.v2) {
+      logger.info('Shutting down V2 WebSocket components...');
+      
+      if (messageRouter) {
+        messageRouter.cleanup();
+      }
+      
+      if (deviceManager && 'cleanup' in deviceManager) {
+        await (deviceManager as V2DeviceRegistry).cleanup();
+      }
+      
+      logger.info('V2 WebSocket components shutdown completed');
+    } else {
+      logger.info('Shutting down V1 WebSocket components...');
+      
+      // Shutdown Device manager (V1)
+      if (deviceManager && 'shutdown' in deviceManager) {
+        (deviceManager as DeviceManager).shutdown();
+      }
+      
+      // Shutdown CDP bridge (V1)  
+      if (cdpRelayBridge) {
+        cdpRelayBridge.shutdown();
+      }
+      
+      logger.info('V1 WebSocket components shutdown completed');
+    }
     
     // 清除所有定时器
     clearTimeout(forceExitTimeout);
@@ -164,5 +266,20 @@ server.listen(port, '0.0.0.0', () => {
   logger.info(`Maximum concurrent instances: ${chromeConfig.maxConcurrentInstances}`);
   logger.info(`Instance timeout: ${chromeConfig.instanceTimeoutMs / 60000} minutes`);
   logger.info(`Inactive check interval: ${chromeConfig.inactiveCheckInterval / 60000} minutes`);
+  
+  // WebSocket architecture info
+  if (config.v2) {
+    logger.info('🚀 WebSocket Architecture: V2 (Enhanced Multi-Device Support)');
+    logger.info('📡 V2 Endpoints:');
+    logger.info(`   - Device Registration: ws://127.0.0.1:${port}/v2/device`);
+    logger.info(`   - CDP Communication: ws://127.0.0.1:${port}/v2/cdp/{deviceId}`);
+    logger.info(`   - Control Interface: ws://127.0.0.1:${port}/v2/control`);
+    logger.info('✨ Features: Thread-safe device registry, intelligent message routing, connection state machine');
+  } else {
+    logger.info('🔄 WebSocket Architecture: V1 (Legacy Compatibility Mode)');
+    logger.info(`📡 WebSocket Endpoint: ws://127.0.0.1:${port}/?token=${config.token}`);
+    logger.info('ℹ️  Use --v2 to enable enhanced multi-device architecture');
+  }
+  
   logger.info('Browser-Go service started successfully');
 });

@@ -18,6 +18,7 @@ Options:
   --token=<string>             Access token (default: 'browser-go-token')
   --port=<number>              Server port (default: 3000)
   --cdp-logging                Enable detailed CDP protocol logging for debugging (default: false)
+  --v2                         Enable V2 WebSocket architecture (default: false)
   --help                       Show help information
 
 Examples:
@@ -38,6 +39,7 @@ export function parseArgs(): AppConfig {
     token: 'browser-go-token',
     cdpLogging: false, // 默认关闭CDP详细日志
     port: 3000, // 默认端口
+    v2: false, // 默认使用V1架构
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -65,6 +67,9 @@ export function parseArgs(): AppConfig {
           break;
         case 'cdp-logging':
           config.cdpLogging = true; // 布尔标志，不需要值
+          break;
+        case 'v2':
+          config.v2 = true; // 启用V2架构
           break;
       }
     }
