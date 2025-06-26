@@ -18,6 +18,7 @@
     "test:patchright": "pnpm run build && node dist/test-patchright.js",
     "test:stability": "scripts/run-multi-device-stability.sh",
     "test:v2": "pnpm run build && node dist/test-v2-architecture.js",
+    "test:e2e:v2": "pnpm run build && node dist/test-e2e-simple-v2.js",
     "open:browser": "pnpm run build && node dist/open-browser.js",
     "cleanup": "scripts/cleanup-test-env.sh",
     "build": "tsc",
