@@ -49,6 +49,7 @@ The application consists of several modular components:
   - `pnpm run test:e2e:clean` - E2E test with automatic cleanup
   - `pnpm run test:safe` - Enhanced test runner with automatic cleanup
   - `pnpm run test:patchright` - Playwright compatibility testing
+  - `pnpm run test:stability` - Multi-device connection stability test (no real browsers)
 - **Test Environment Cleanup**: Clean up leftover processes and resources:
   - `pnpm run cleanup` - Clean up ports, processes, and temporary files
   - `scripts/cleanup-test-env.sh` - Direct cleanup script execution

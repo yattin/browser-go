@@ -62,10 +62,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [--type e2e|bridge|patchright] [--verbose] [--help]"
+            echo "Usage: $0 [--type e2e|bridge|patchright|stability] [--verbose] [--help]"
             echo ""
             echo "Options:"
-            echo "  --type TYPE    Test type to run (e2e, bridge, patchright)"
+            echo "  --type TYPE    Test type to run (e2e, bridge, patchright, stability)"
             echo "  --verbose      Enable verbose output"
             echo "  --help         Show this help message"
             exit 0
@@ -114,9 +114,18 @@ case $TEST_TYPE in
         print_info "Running patchright tests..."
         pnpm run test:patchright
         ;;
+    stability)
+        if [ "$VERBOSE" = true ]; then
+            print_info "Running stability tests in verbose mode..."
+            DEBUG=* "$SCRIPT_DIR/run-multi-device-stability.sh" --verbose
+        else
+            print_info "Running stability tests..."
+            "$SCRIPT_DIR/run-multi-device-stability.sh"
+        fi
+        ;;
     *)
         print_error "Unknown test type: $TEST_TYPE"
-        print_info "Available types: e2e, bridge, patchright"
+        print_info "Available types: e2e, bridge, patchright, stability"
         exit 1
         ;;
 esac

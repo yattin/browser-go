@@ -27,6 +27,7 @@ pnpm run cleanup
 - `pnpm run test:e2e` - Complete end-to-end test with real Chrome and extension
 - `pnpm run test:e2e:simple` - Simplified E2E test with improved stability
 - `pnpm run test:patchright` - Playwright compatibility testing
+- `pnpm run test:stability` - Multi-device connection stability test (no real browsers)
 
 ### Simplified E2E Test (Recommended)
 
@@ -73,6 +74,34 @@ Screenshots are automatically saved with descriptive filenames:
 .test_result/bing-search-client-{ID}-{timestamp}.png
 ```
 Example: `bing-search-client-1-2025-06-26T08-09-39-308Z.png`
+
+### Multi-Device Stability Test
+
+The multi-device stability test (`pnpm run test:stability`) focuses on connection robustness without real browsers:
+
+**🔧 What it tests:**
+- Simultaneous device registration (5 simulated devices)
+- Device ID conflict resolution and proper cleanup
+- Concurrent CDP message routing and response handling
+- Connection resilience under stress (disconnect/reconnect cycles)
+
+**⚡ Key advantages:**
+- **Fast execution** - Completes in ~90 seconds
+- **No browser dependencies** - Pure WebSocket simulation  
+- **Targeted testing** - Focuses specifically on connection stability
+- **Conflict detection** - Tests edge cases that are hard to reproduce manually
+
+**📊 Example Results:**
+```
+📊 Multi-Device Stability Test Results:
+=======================================
+✅ PASS Simultaneous Device Registration
+✅ PASS Device ID Conflict Resolution
+✅ PASS Concurrent Message Routing
+✅ PASS Connection Resilience
+
+Overall: 4/4 tests passed
+```
 
 ### Enhanced Tests (with cleanup)
 - `pnpm run test:e2e:clean` - E2E test with automatic cleanup

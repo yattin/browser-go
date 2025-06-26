@@ -16,6 +16,8 @@
     "test:e2e:clean": "scripts/test-with-cleanup.sh --type e2e",
     "test:safe": "scripts/test-with-cleanup.sh",
     "test:patchright": "pnpm run build && node dist/test-patchright.js",
+    "test:stability": "scripts/run-multi-device-stability.sh",
+    "test:v2": "pnpm run build && node dist/test-v2-architecture.js",
     "open:browser": "pnpm run build && node dist/open-browser.js",
     "cleanup": "scripts/cleanup-test-env.sh",
     "build": "tsc",
