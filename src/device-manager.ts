@@ -28,12 +28,13 @@ interface RegisteredDevice {
 export class DeviceManager {
   private devices: Map<string, RegisteredDevice> = new Map();
   private cleanupInterval: NodeJS.Timeout;
+  private HEARTBEAT_TIMEOUT_MS = 30000; // 30秒心跳超时
 
   constructor() {
-    // Clean up disconnected devices every 30 seconds
+    // Clean up disconnected devices every 10 seconds
     this.cleanupInterval = setInterval(() => {
       this.cleanupDisconnectedDevices();
-    }, 30000);
+    }, 10000);
   }
 
   /**
@@ -173,18 +174,33 @@ export class DeviceManager {
   }
 
   /**
+   * Update device heartbeat timestamp
+   */
+  updateDeviceHeartbeat(deviceId: string): void {
+    const device = this.devices.get(deviceId);
+    if (device) {
+      device.lastSeen = new Date();
+      logger.debug(`Updated heartbeat for device ${deviceId}`);
+    }
+  }
+
+  /**
    * Clean up disconnected devices
    */
   private cleanupDisconnectedDevices(): void {
     const now = new Date();
-    const staleThreshold = 5 * 60 * 1000; // 5 minutes
 
     for (const [deviceId, device] of this.devices.entries()) {
       const isSocketClosed = device.extensionSocket.readyState !== WebSocket.OPEN;
-      const isStale = now.getTime() - device.lastSeen.getTime() > staleThreshold;
+      const timeSinceLastSeen = now.getTime() - device.lastSeen.getTime();
+      const isStale = timeSinceLastSeen > this.HEARTBEAT_TIMEOUT_MS;
 
       if (isSocketClosed || isStale) {
-        logger.info(`Cleaning up stale device: ${deviceId} (closed: ${isSocketClosed}, stale: ${isStale})`);
+        logger.info(`Cleaning up stale device: ${deviceId} (closed: ${isSocketClosed}, stale: ${isStale}, lastSeen: ${Math.round(timeSinceLastSeen / 1000)}s ago)`);
+        // 关闭 WebSocket 连接
+        if (device.extensionSocket.readyState === WebSocket.OPEN) {
+          device.extensionSocket.close(1000, 'Heartbeat timeout');
+        }
         this.devices.delete(deviceId);
       }
     }

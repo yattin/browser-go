@@ -13,6 +13,7 @@
     "test:bridge": "pnpm run build && node dist/test-bridge.js",
     "test:e2e": "scripts/run-e2e-test.sh",
     "test:patchright": "pnpm run build && node dist/test-patchright.js",
+    "test:cdp": "pnpm run build && node dist/test-cdp-protocol.js",
     "open:browser": "pnpm run build && node dist/open-browser.js",
     "build": "tsc",
     "build:watch": "tsc --watch",
