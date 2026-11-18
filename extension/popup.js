@@ -37,9 +37,14 @@ class PopupController {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     this.currentTab = tab;
 
-    // Set default bridge URL (read-only for display)
-    this.bridgeUrlInput.value = 'ws://localhost:3000/extension';
-    this.bridgeUrlInput.disabled = true; // Always disabled for auto-connection mode
+    // Load configured bridge URL from storage (defaults to ws://localhost:3000/extension)
+    const stored = await chrome.storage.local.get(['bridgeUrl']);
+    this.bridgeUrlInput.value = stored.bridgeUrl || 'ws://localhost:3000/extension';
+    this.bridgeUrlInput.disabled = false;
+    this.bridgeUrlInput.addEventListener('change', async () => {
+      const nextUrl = this.bridgeUrlInput.value.trim() || 'ws://localhost:3000/extension';
+      await chrome.storage.local.set({ bridgeUrl: nextUrl });
+    });
 
     // URL input is now display-only, no event listeners needed
     

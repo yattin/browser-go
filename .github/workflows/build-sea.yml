@@ -1,74 +1,67 @@
-name: Build SEA Executables
+name: Build Go Executables
 
 on:
   push:
-    branches: [ main, ts ]
+    branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Run Unit & Integration Tests
+        run: go test -v -race ./...
+
   build:
+    needs: test
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: linux
-            binary_name: browser-go-sea-linux
-          - os: windows-latest
-            target: windows
-            binary_name: browser-go-sea-windows.exe
-          - os: macos-latest
-            target: macos
-            binary_name: browser-go-sea-macos
+          - goos: linux
+            goarch: amd64
+            binary_name: browser-go-linux-amd64
+          - goos: linux
+            goarch: arm64
+            binary_name: browser-go-linux-arm64
+          - goos: windows
+            goarch: amd64
+            binary_name: browser-go-windows-amd64.exe
+          - goos: darwin
+            goarch: amd64
+            binary_name: browser-go-macos-amd64
+          - goos: darwin
+            goarch: arm64
+            binary_name: browser-go-macos-arm64
 
-    runs-on: ${{ matrix.os }}
-
+    runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'pnpm'
-
-    - name: Verify pnpm installation
-      run: |
-        echo "pnpm version:"
-        pnpm --version
-        echo "Node.js version:"
-        node --version
-        echo "npm version:"
-        npm --version
-
-    - name: Install dependencies
-      run: pnpm install
-
-    - name: Create binary directory
-      run: mkdir -p binary
-      shell: bash
-
-    - name: Build SEA executable
-      run: pnpm run build:sea:${{ matrix.target }}
-      env:
-        NODE_ENV: production
-        CI: true
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: browser-go-sea-${{ matrix.target }}
-        path: binary/${{ matrix.binary_name }}
-        retention-days: 30
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Cross-Compile Static Binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p binary
+          go build -trimpath -ldflags="-s -w" -o binary/${{ matrix.binary_name }} ./cmd/browser-go
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: binary/${{ matrix.binary_name }}
+          retention-days: 30
 
   release:
     needs: build
@@ -76,32 +69,17 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./artifacts
-
-    - name: Prepare release assets
-      run: |
-        mkdir -p release
-        cp artifacts/browser-go-sea-linux/browser-go-sea-linux release/
-        cp artifacts/browser-go-sea-windows/browser-go-sea-windows.exe release/
-        cp artifacts/browser-go-sea-macos/browser-go-sea-macos release/
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          release/browser-go-sea-linux
-          release/browser-go-sea-windows.exe
-          release/browser-go-sea-macos
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p release
+          find ./artifacts -type f -exec cp {} ./release/ \;
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

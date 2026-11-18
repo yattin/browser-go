@@ -1,302 +1,100 @@
-# Browser-Go
+# Browser-Go (Golang Edition v2.0)
 
-Browser-Go 是一个基于 Chrome DevTools Protocol (CDP) 的浏览器管理服务，提供基于 WebSocket 的 Chrome 实例代理、自动生命周期管理、用户会话持久化和实例控制的 RESTful API。
+Browser-Go 是一个使用 **Golang** 原生构建的高稳定性 Chrome DevTools Protocol (CDP) 浏览器实例管理服务与**分布式内网穿透浏览器池网关**。单文件零外部运行时依赖（~10 MB），内置与 `ProxyForge` 100% 线级互通的内网穿透协议栈（`bridge`/`tbridge`/mTLS/`KCP+FEC`/`--pf-p2p` UDP 打洞与 Cluster Hub 监控上报）。
 
-[English Documentation](README.md)
+> 旧版 Node.js/TypeScript 实现已完整归档至 [`legacy-ts/`](./legacy-ts)。
 
-## 功能特点
+---
 
-- **多用户并发访问** 支持可配置的实例限制
-- **WebSocket 代理** 到 Chrome DevTools Protocol 端点
-- **自动生命周期管理** 基于超时的清理机制
-- **用户会话持久化** 通过专用的 Chrome 用户数据目录
-- **RESTful API** 用于实例控制（停止、列表、统计）
-- **Swagger UI 文档** 位于 `/api-docs`
-- **多种部署选项** 包括独立可执行文件
-- **TypeScript 实现** 提供全面的类型安全
-- **结构化日志记录** 支持每日轮转和控制台/文件输出
+## 核心特性
 
-## 系统要求
+- **双角色单二进制**：
+  - `browser-go [node]`：工作节点模式（100% 兼容旧版 CLI 参数、REST API、启动 WebSocket 与 Chrome 扩展桥接）；
+  - `browser-go pool`：多节点 CDP 浏览器池中心调度网关（槽位感知分发、`launch.user` 会话粘性路由、地域/运营商标签路由、满载等待队列）。
+- **操作系统内核级进程强隔离**：
+  - Windows 采用 `Job Object`（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），Linux/macOS 采用独立进程组（`-pgid`），即使主进程意外强退也绝不残留僵尸 `chrome.exe` 子进程。
+- **零泄漏并发池控制**：
+  - 槽位原子预占、同 `user` 并发启动合并（防止 `SingletonLock` 损坏）、匿名临时会话断开即销毁、`60ms` 极速 DevTools 就绪探测。
+- **内置 `ProxyForge` 线级兼容内网穿透 (`pkg/pftunnel`)**：
+  - 无需额外部署穿透客户端，通过 `--pf-bridge` 即可直连原版 `ProxyForge bridge/tbridge` 或 `browser-go pool --pf-listen`；
+  - 支持双向 mTLS、`--pf-tls-pin` 证书指纹锁定、`-Z` AES-256-GCM 流加密、`-M` Flate 压缩、`xtaci/kcp-go/v5` KCP+FEC 弱网加速、`--pf-p2p` UDP 打洞直连，以及 `--pf-hub` 接入 `ProxyForge Admin (:55333)` 实时上报指标。
+- **无串流多设备 Chrome 扩展桥接 (`/extension` + `/cdp`)**：
+  - 独立会话隔离、单调请求序号重映射与按 `deviceId` 严格路由 CDP 事件。
 
-- **Node.js 18.0+**（单一可执行应用需要）
-- **Chrome 浏览器**（自动检测）
-- **操作系统**：Windows/Linux/macOS
-- **包管理器**：pnpm（推荐，在 packageManager 字段中指定）
+---
 
-## 安装
+## 快速构建与自检
 
-### 方式一：从源码构建
+```powershell
+# Windows PowerShell 一键编译并运行单元与分布式集成测试
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -SelfTest
 
-1. 克隆仓库：
+# 标准 Go 编译
+go build -trimpath -ldflags="-s -w" -o bin/browser-go ./cmd/browser-go
+```
+
+---
+
+## 典型部署拓扑
+
+### 场景 1：单机 CDP 浏览器池（兼容旧版全部用法）
 ```bash
-git clone https://github.com/yattin/browser-go.git
-cd browser-go
+./bin/browser-go --port=3000 --max-instances=10 --token=my-secret --headless
+```
+Playwright / Patchright 连接：
+```ts
+const browser = await chromium.connectOverCDP(
+  'ws://127.0.0.1:3000?token=my-secret&startingUrl=https://example.com&launch={"user":"u1"}'
+);
 ```
 
-2. 安装依赖：
+### 场景 2：一键组建跨内网分布式 CDP 浏览器池（内置 Bridge 自动注册）
+1. **公网中心启动 `pool` 网关**：
+   ```bash
+   ./bin/browser-go pool \
+     --port=3000 \
+     --token=pool-secret \
+     --pf-listen=0.0.0.0:33080 \
+     --pf-cert=ca.crt --pf-key-file=ca.key \
+     --pf-client-keys=office-sh,home-bj
+   ```
+2. **多台内网机器启动 `node` 节点（支持 `--port=0` 纯内存隐身穿透，主机零监听端口）**：
+   ```bash
+   ./bin/browser-go node \
+     --port=0 \
+     --max-instances=8 \
+     --token=pool-secret \
+     --pf-bridge=pool.example.com:33080 \
+     --pf-key=office-sh \
+     --pf-cert=client.crt --pf-key-file=client.key --pf-ca=ca.crt \
+     --tags="region=shanghai,isp=telecom"
+   ```
+3. **按地域标签或粘性用户连接池网关**：
+   ```text
+   ws://pool.example.com:3000?token=pool-secret&tags=region:shanghai&startingUrl=https://example.com&launch={"user":"alice"}
+   ```
+
+### 场景 3：直连原版 `ProxyForge` (`bridge` / `tbridge` + `ProxyForge Admin`)
 ```bash
-pnpm install
+# 公网运行原版 ProxyForge
+proxyforge bridge -p :33080 -C ca.crt -K ca.key --client-keys node-01
+proxyforge server -P 127.0.0.1:33080 -C srv.crt -K srv.key --ca-bundle ca.crt -r 127.0.0.1:13001@[node-01]127.0.0.1:3000
+
+# 内网单二进制运行 browser-go 直接穿透并接入 ProxyForge Admin Cluster Hub
+browser-go node --port=0 --token=my-secret \
+  --pf-bridge=<public_ip>:33080 --pf-key=node-01 \
+  --pf-cert=cli.crt --pf-key-file=cli.key --pf-ca=ca.crt --pf-p2p \
+  --pf-hub=<public_ip>:55333 --pf-hub-key=<cluster_secret>
 ```
 
-3. 构建项目：
-```bash
-pnpm run build
-```
-
-### 方式二：下载二进制文件
-
-从 [Releases](https://github.com/yattin/browser-go/releases) 页面下载预构建的二进制文件：
-- `browser-go-sea-linux`（Linux）
-- `browser-go-sea-windows.exe`（Windows）
-- `browser-go-sea-macos`（macOS）
-
-## 使用方法
-
-### 启动服务
-
-#### 从源码构建启动
-```bash
-# 构建并启动
-pnpm run build
-node dist/cli.js [选项]
-
-# 或使用启动脚本
-pnpm run start -- [选项]
-```
-
-#### 从二进制文件启动
-```bash
-# Linux/macOS
-./browser-go-sea-linux [选项]
-
-# Windows
-browser-go-sea-windows.exe [选项]
-```
-
-### 命令行选项
-
-| 选项                                  | 说明                         | 默认值             |
-| ------------------------------------- | ---------------------------- | ------------------ |
-| `--max-instances=<number>`            | 最大并发实例数               | 10                 |
-| `--instance-timeout=<minutes>`        | 实例超时时间（分钟）         | 60                 |
-| `--inactive-check-interval=<minutes>` | 检查不活跃实例的间隔（分钟） | 5                  |
-| `--token=<string>`                    | 身份验证访问令牌             | 'browser-go-token' |
-| `--help`                              | 显示帮助信息                 | -                  |
-
-### 示例
-
-```bash
-# 使用默认配置启动
-node dist/cli.js
-# 或使用二进制文件
-./browser-go-sea-linux
-
-# 自定义配置启动
-node dist/cli.js --max-instances=5 --instance-timeout=30 --inactive-check-interval=2
-
-# 设置自定义访问令牌
-node dist/cli.js --token=my-secret-token
-
-# 使用 pnpm 启动脚本传递选项
-pnpm run start -- --max-instances=5 --token=custom-token
-```
-
-## API 接口
-
-服务提供 WebSocket 和 RESTful API 端点。运行时可在 `/api-docs`（Swagger UI）查看完整的 API 文档。
-
-### WebSocket 连接（浏览器启动）
-
-通过 WebSocket 连接启动浏览器实例，支持两种 URL 格式：
-
-#### 1. 查询字符串格式
-```
-ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
-```
-
-#### 2. 路径格式
-```
-ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
-```
-
-**参数说明：**
-- `token`：身份验证访问令牌（必需）
-- `startingUrl`：浏览器启动后访问的 URL（必需，路径格式中需要 URL 编码）
-- `launch`：JSON 格式的启动参数（可选，仅作为查询参数）
-
-**启动参数示例：**
-```json
-{
-  "user": "user123", 
-  "args": ["--window-size=1920,1080", "--lang=zh-CN", "--disable-web-security"]
-}
-```
-
-**用户会话持久化：** 当提供 `user` 参数时，Chrome 实例会被缓存并在同一用户的后续连接中重复使用。用户数据存储在 `~/.browser-go/browser_data/<user_id>/`。
-
-### RESTful API 端点
-
-#### 停止浏览器实例
-```http
-GET /api/v1/browser/stop?user_id=<user_id>
-```
-停止指定用户的特定浏览器实例。
-
-#### 列出活跃实例
-```http
-GET /api/v1/browser/list
-```
-返回所有活跃的浏览器实例以及活动数据和系统统计信息。
-
-#### 系统统计信息
-```http
-GET /api/v1/browser/stats
-```
-返回当前系统状态，包括实例计数、限制和配置信息。
-
-#### API 文档
-```http
-GET /api-docs
-```
-所有端点的交互式 Swagger UI 文档。
-
-```http
-GET /openapi.json
-```
-JSON 格式的 OpenAPI 3.0 规范。
-
-## 配置说明
-
-### 实例管理
-
-- **最大并发实例数**：控制可同时运行的最大浏览器实例数。达到此限制时，新连接请求将被拒绝。
-- **实例超时时间**：浏览器实例在非活跃状态下的最大存活时间（默认：60分钟）。超过此时间后，实例将被自动关闭。
-- **非活跃检查间隔**：系统检查非活跃实例的频率（默认：5分钟）。根据使用模式调整。
-- **访问令牌**：用于验证客户端请求的令牌。生产环境中使用强随机值。
-
-### 文件位置
-
-- **用户数据**：`~/.browser-go/browser_data/<user_id>/` - Chrome 用户数据目录
-- **日志**：`~/.browser-go/logs/browser-go-YYYY-MM-DD.log` - 每日轮转日志（保留10天，每文件最大10MB）
-
-### 日志记录
-
-使用 Winston 的结构化日志记录功能：
-- **控制台输出**：开发用的彩色格式
-- **文件输出**：每日轮转与自动清理
-- **日志级别**：error、warn、info、debug
-
-## 生产环境部署
-
-### 性能考虑
-
-1. **内存需求**：确保有足够的系统内存运行多个 Chrome 实例（推荐：每10个实例2GB+）
-2. **反向代理**：使用 Nginx 或类似工具进行负载均衡和 SSL 终端
-3. **进程管理**：使用 PM2、systemd 或 Docker 进行进程监督
-4. **监控**：定期检查日志和 `/api/v1/browser/stats` 端点
-
-### 安全建议
-
-1. 生产环境中使用强、唯一的访问令牌
-2. 考虑网络级访问控制
-3. 监控资源使用并设置适当限制
-4. 定期审查日志以发现可疑活动
-
-## 开发
-
-### 项目结构
-
-```
-browser-go/
-├── src/                    # TypeScript 源代码
-│   ├── cli.ts             # 主入口点
-│   ├── logger.ts          # 基于 Winston 的日志模块
-│   ├── types.ts           # TypeScript 类型定义
-│   └── test.ts            # 测试脚本
-├── dist/                   # 编译的 JavaScript 输出（tsc）
-├── dist-vite/              # 打包输出（Vite）
-├── binary/                 # 构建的可执行文件
-├── .github/workflows/      # GitHub Actions CI/CD
-├── openapi.yaml           # API 规范
-├── sea-config.json        # 单一可执行应用配置
-├── vite.config.ts         # Vite 打包器配置
-├── tsconfig.json          # TypeScript 编译器配置
-├── eslint.config.js       # ESLint 配置（扁平配置）
-├── .prettierrc.cjs        # Prettier 配置
-├── package.json           # 项目配置
-└── pnpm-lock.yaml         # PNPM 锁定文件
-```
-
-### 构建系统
-
-项目使用**双构建系统**：
-
-1. **TypeScript 编译**（`pnpm run build`）：用于开发的直接 tsc 编译
-2. **Vite 打包**（`pnpm run build:bundle`）：为分发创建优化的单文件包
-
-### 开发脚本
-
-#### 核心开发
-- `pnpm run build` - 编译 TypeScript 到 JavaScript
-- `pnpm run start` - 启动编译后的应用程序
-- `pnpm run test` - 运行测试
-- `pnpm run lint` - 代码检查
-- `pnpm run lint:fix` - 代码检查并自动修复
-
-#### 二进制文件生成
-- `pnpm run build:sea:macos` - 构建 macOS SEA 可执行文件
-- `pnpm run build:sea:windows` - 构建 Windows SEA 可执行文件
-- `pnpm run build:sea:linux` - 构建 Linux SEA 可执行文件
-- `pnpm run build:binary:all` - 构建 PKG 二进制文件（传统）
-
-#### 打包
-- `pnpm run build:bundle` - 使用 Vite 创建单文件包
-
-### 代码风格与质量
-
-- **TypeScript**：严格配置的完全类型安全
-- **ESLint**：支持 TypeScript 的代码检查
-- **Prettier**：代码格式化（2空格，单引号，分号）
-- **命名约定**：变量/函数使用 camelCase，类型/类使用 PascalCase
-
-### 依赖项
-
-#### 运行时依赖
-- **express** - Web 服务器框架
-- **chrome-launcher** - Chrome 浏览器启动器
-- **ws** - WebSocket 实现
-- **http-proxy** - HTTP 代理
-- **winston** - 结构化日志记录
-- **swagger-ui-express** - API 文档
-- **uuid** - 唯一标识符生成
-
-#### 开发依赖
-- **typescript** - TypeScript 编译器
-- **vite** - 快速打包器
-- **eslint** - 代码检查
-- **prettier** - 代码格式化
-- **pkg** - 二进制文件打包（传统）
-- **postject** - SEA 二进制文件注入
-
-### 自动化构建
-
-GitHub Actions 自动为所有平台构建 SEA 可执行文件：
-
-- **触发器**：推送到 `main`/`ts` 分支、版本标签（`v*`）或到 `main` 的拉取请求
-- **平台**：Linux、Windows、macOS
-- **构件**：构建完成后30天内可用
-- **发布**：为版本标签自动创建，附带所有平台二进制文件
-
-构建工作流在 `.github/workflows/build-sea.yml` 中定义。
-
-### 单一可执行应用（SEA）
-
-项目支持 Node.js 20+ SEA 创建独立可执行文件：
-
-- **配置**：`sea-config.json`
-- **优势**：官方 Node.js 解决方案，无外部依赖
-- **替代**：第三方工具如 PKG，具有更好的兼容性和性能
-
-## 许可证
-
-ISC License
+---
+
+## RESTful 与管理 API
+
+- `GET /api/v1/browser/stats` — 当前节点或全池容量与可用槽位（`available_slots`）
+- `GET /api/v1/browser/list` — 列出活跃浏览器实例（`pool` 模式下聚合所有节点并标注 `node_id`）
+- `GET /api/v1/browser/stop?user_id=<id>` — 停止指定用户的浏览器实例（`pool` 模式自动路由至持有该会话的节点）
+- `GET /api/v1/pool/nodes` — （`pool` 模式专属）查看所有已穿透注册节点的在线状态、RTT、槽位与标签
+- `GET /api/v1/devices` & `/api/v1/device/stats` — Chrome 扩展设备列表与状态
+- `GET /json/version` — 标准 CDP HTTP 发现接口（支持 `connectOverCDP("http://...")`）
+- `GET /api-docs` & `/openapi.json` — 内嵌 API 文档与 OpenAPI 3.0.3 规范

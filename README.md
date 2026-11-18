@@ -1,302 +1,64 @@
-# Browser-Go
+# Browser-Go (Golang Edition v2.0)
 
-Browser-Go is a Chrome DevTools Protocol (CDP) based browser management service that provides WebSocket-based Chrome instance proxying with automatic lifecycle management, user session persistence, and RESTful APIs for instance control.
+Browser-Go is a zero-dependency, high-stability **Chrome DevTools Protocol (CDP)** browser instance manager and **distributed intranet-penetrated CDP Browser Pool Gateway**, natively rewritten in **Golang** with built-in wire-compatible **ProxyForge** tunnel protocols (`bridge`/`tbridge`/mTLS/`KCP+FEC`/`--pf-p2p` UDP NAT hole-punching & Cluster Hub telemetry).
 
-[中文文档](README.zh-CN.md)
+[中文文档](README.zh-CN.md) | Legacy TypeScript Archive: [`legacy-ts/`](./legacy-ts)
 
-## Features
+---
 
-- **Multi-user concurrent access** with configurable instance limits
-- **WebSocket proxy** to Chrome DevTools Protocol endpoints  
-- **Automatic lifecycle management** with timeout-based cleanup
-- **User session persistence** via dedicated Chrome user data directories
-- **RESTful API** for instance control (stop, list, stats)
-- **Swagger UI documentation** at `/api-docs`
-- **Multiple deployment options** including standalone executables
-- **TypeScript** implementation with comprehensive type safety
-- **Structured logging** with daily rotation and console/file output
+## Key Features
 
-## System Requirements
+- **Dual-Role Single Binary (~10 MB)**:
+  - `browser-go [node]`: Worker node managing local Chrome/Chromium/Edge/Brave instances and extension relays (100% backward-compatible CLI flags, WebSocket URLs, and OpenAPI REST routes);
+  - `browser-go pool`: Central multi-node CDP Browser Pool Scheduler & ProxyForge Bridge Gateway (least-loaded slot scheduling, `launch.user` sticky profile routing, region/ISP tag filtering, and burst wait queue).
+- **OS Kernel Process-Tree Isolation**:
+  - Uses Windows **Job Objects** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and Unix Process Groups (`-pgid`), guaranteeing zero orphaned `chrome.exe` processes even on abnormal termination.
+- **Zero-Leak Concurrency & Fast DevTools Readiness**:
+  - Atomic slot reservation, per-`user` concurrent launch coalescing (`SingletonLock` protection), immediate teardown of ephemeral anonymous sessions on disconnect, and `60ms` DevTools polling.
+- **Built-in Wire-Compatible `ProxyForge` Tunnel Stack (`pkg/pftunnel`)**:
+  - Connects directly to vanilla `proxyforge bridge` / `tbridge` or `browser-go pool --pf-listen` with zero extra sidecars;
+  - Supports strict mutual TLS (mTLS), `--pf-tls-pin` SHA-256 certificate pinning, `-Z` AES-256-GCM encryption, `-M` Flate compression, `xtaci/kcp-go/v5` Reed-Solomon FEC, `--pf-p2p` direct UDP hole punching, and `--pf-hub` telemetry reporting to `ProxyForge Admin (:55333)`.
+- **Concurrency-Safe Chrome Extension Relay (`/extension` + `/cdp`)**:
+  - Per-socket extension isolation, monotonic request ID remapping, and strict `deviceId`-scoped event delivery.
 
-- **Node.js 18.0+** (required for Single Executable Applications)
-- **Chrome browser** (automatically detected)
-- **Operating System**: Windows/Linux/macOS
-- **Package Manager**: pnpm (recommended, specified in packageManager field)
+---
 
-## Installation
+## Quick Build & Self-Test
 
-### Option 1: From Source
+```powershell
+# Windows PowerShell build + full unit/integration test suite
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -SelfTest
 
-1. Clone the repository:
+# Standard Go build
+go build -trimpath -ldflags="-s -w" -o bin/browser-go ./cmd/browser-go
+```
+
+---
+
+## Usage Examples
+
+### 1. Standalone Browser Node
 ```bash
-git clone https://github.com/yattin/browser-go.git
-cd browser-go
+./bin/browser-go --port=3000 --max-instances=10 --token=my-secret --headless
 ```
 
-2. Install dependencies:
+### 2. Distributed Intranet-Penetrated CDP Browser Pool
 ```bash
-pnpm install
+# Public Cloud: Start Pool Gateway with built-in ProxyForge Bridge
+./bin/browser-go pool --port=3000 --token=pool-secret --pf-listen=:33080 --pf-cert=ca.crt --pf-key-file=ca.key
+
+# Intranet Hosts: Start stealth worker nodes (--port=0 opens zero local ports!)
+./bin/browser-go node --port=0 --max-instances=8 --token=pool-secret \
+  --pf-bridge=pool.example.com:33080 --pf-key=office-node-1 \
+  --pf-cert=cli.crt --pf-key-file=cli.key --pf-ca=ca.crt --tags="region=shanghai,isp=telecom"
 ```
 
-3. Build the project:
+### 3. Direct Interoperability with `ProxyForge`
 ```bash
-pnpm run build
+proxyforge bridge -p :33080 -C ca.crt -K ca.key --client-keys node-01
+proxyforge server -P 127.0.0.1:33080 -C srv.crt -K srv.key --ca-bundle ca.crt -r 127.0.0.1:13001@[node-01]127.0.0.1:3000
+
+./bin/browser-go node --port=0 --token=my-secret \
+  --pf-bridge=127.0.0.1:33080 --pf-key=node-01 \
+  --pf-cert=cli.crt --pf-key-file=cli.key --pf-ca=ca.crt --pf-p2p
 ```
-
-### Option 2: Download Binaries
-
-Download pre-built binaries from the [Releases](https://github.com/yattin/browser-go/releases) page:
-- `browser-go-sea-linux` (Linux)
-- `browser-go-sea-windows.exe` (Windows) 
-- `browser-go-sea-macos` (macOS)
-
-## Usage
-
-### Starting the Service
-
-#### From Source Build
-```bash
-# Build and start
-pnpm run build
-node dist/cli.js [options]
-
-# Or use the start script
-pnpm run start -- [options]
-```
-
-#### From Binary
-```bash
-# Linux/macOS
-./browser-go-sea-linux [options]
-
-# Windows
-browser-go-sea-windows.exe [options]
-```
-
-### Command Line Options
-
-| Option                                | Description                                         | Default            |
-| ------------------------------------- | --------------------------------------------------- | ------------------ |
-| `--max-instances=<number>`            | Maximum number of concurrent instances              | 10                 |
-| `--instance-timeout=<minutes>`        | Instance timeout in minutes                         | 60                 |
-| `--inactive-check-interval=<minutes>` | Interval for checking inactive instances in minutes | 5                  |
-| `--token=<string>`                    | Access token for authentication                     | 'browser-go-token' |
-| `--help`                              | Show help information                               | -                  |
-
-### Examples
-
-```bash
-# Start with default configuration
-node dist/cli.js
-# or using binary
-./browser-go-sea-linux
-
-# Start with custom configuration  
-node dist/cli.js --max-instances=5 --instance-timeout=30 --inactive-check-interval=2
-
-# Set custom access token
-node dist/cli.js --token=my-secret-token
-
-# Using pnpm start script with options
-pnpm run start -- --max-instances=5 --token=custom-token
-```
-
-## API Reference
-
-The service provides both WebSocket and RESTful API endpoints. Complete API documentation is available at `/api-docs` (Swagger UI) when the service is running.
-
-### WebSocket Connection (Browser Launch)
-
-Launch a browser instance via WebSocket connection with two supported URL formats:
-
-#### 1. Query String Format
-```
-ws://localhost:3000?token=<token>&startingUrl=<url>&launch=<launch_args>
-```
-
-#### 2. Path Format  
-```
-ws://localhost:3000/startingUrl/<url>/token/<token>?launch=<launch_args>
-```
-
-**Parameters:**
-- `token`: Access token for authentication (required)
-- `startingUrl`: URL to open after browser launch (required, URL-encoded in path format)
-- `launch`: JSON format launch parameters (optional, query parameter only)
-
-**Launch Parameters Example:**
-```json
-{
-  "user": "user123", 
-  "args": ["--window-size=1920,1080", "--lang=en-US", "--disable-web-security"]
-}
-```
-
-**User Session Persistence:** When a `user` parameter is provided, Chrome instances are cached and reused for subsequent connections from the same user. User data is stored in `~/.browser-go/browser_data/<user_id>/`.
-
-### RESTful API Endpoints
-
-#### Stop Browser Instance
-```http
-GET /api/v1/browser/stop?user_id=<user_id>
-```
-Stops a specific browser instance for the given user.
-
-#### List Active Instances  
-```http
-GET /api/v1/browser/list
-```
-Returns all active browser instances with activity data and system statistics.
-
-#### System Statistics
-```http
-GET /api/v1/browser/stats  
-```
-Returns current system status including instance counts, limits, and configuration.
-
-#### API Documentation
-```http
-GET /api-docs
-```
-Interactive Swagger UI documentation for all endpoints.
-
-```http
-GET /openapi.json
-```
-OpenAPI 3.0 specification in JSON format.
-
-## Configuration
-
-### Instance Management
-
-- **Maximum Concurrent Instances**: Controls the maximum number of browser instances that can run simultaneously. New connection requests will be rejected when this limit is reached.
-- **Instance Timeout**: Maximum survival time for browser instances in inactive state (default: 60 minutes). Instances will be automatically closed after this time.
-- **Inactive Check Interval**: How often the system checks for inactive instances (default: 5 minutes). Adjust based on your usage patterns.
-- **Access Token**: Token used to authenticate client requests. Use a strong random value in production.
-
-### File Locations
-
-- **User Data**: `~/.browser-go/browser_data/<user_id>/` - Chrome user data directories
-- **Logs**: `~/.browser-go/logs/browser-go-YYYY-MM-DD.log` - Daily rotated logs (10 days retention, 10MB max per file)
-
-### Logging
-
-Structured logging with Winston featuring:
-- **Console output**: Colorized format for development
-- **File output**: Daily rotation with automatic cleanup
-- **Log levels**: Error, warn, info, debug
-
-## Production Deployment
-
-### Performance Considerations
-
-1. **Memory Requirements**: Ensure sufficient system memory for running multiple Chrome instances (recommended: 2GB+ per 10 instances)
-2. **Reverse Proxy**: Use Nginx or similar for load balancing and SSL termination
-3. **Process Management**: Use PM2, systemd, or Docker for process supervision
-4. **Monitoring**: Regularly check logs and `/api/v1/browser/stats` endpoint
-
-### Security Recommendations
-
-1. Use strong, unique access tokens in production
-2. Consider network-level access controls
-3. Monitor resource usage and set appropriate limits
-4. Regular log review for suspicious activity
-
-## Development
-
-### Project Structure
-
-```
-browser-go/
-├── src/                    # TypeScript source code
-│   ├── cli.ts             # Main entry point 
-│   ├── logger.ts          # Winston-based logging module
-│   ├── types.ts           # TypeScript type definitions
-│   └── test.ts            # Test script
-├── dist/                   # Compiled JavaScript output (tsc)
-├── dist-vite/              # Bundled output (Vite)
-├── binary/                 # Built executable files
-├── .github/workflows/      # GitHub Actions CI/CD
-├── openapi.yaml           # API specification
-├── sea-config.json        # Single Executable Application config
-├── vite.config.ts         # Vite bundler configuration
-├── tsconfig.json          # TypeScript compiler configuration
-├── eslint.config.js       # ESLint configuration (flat config)
-├── .prettierrc.cjs        # Prettier configuration
-├── package.json           # Project configuration
-└── pnpm-lock.yaml         # PNPM lock file
-```
-
-### Build System
-
-The project uses a **dual build system**:
-
-1. **TypeScript Compilation** (`pnpm run build`): Direct tsc compilation for development
-2. **Vite Bundling** (`pnpm run build:bundle`): Creates optimized single-file bundles for distribution
-
-### Development Scripts
-
-#### Core Development
-- `pnpm run build` - Compile TypeScript to JavaScript
-- `pnpm run start` - Start the compiled application  
-- `pnpm run test` - Run tests
-- `pnpm run lint` - Lint code
-- `pnpm run lint:fix` - Lint and auto-fix issues
-
-#### Binary Generation
-- `pnpm run build:sea:macos` - Build macOS SEA executable
-- `pnpm run build:sea:windows` - Build Windows SEA executable  
-- `pnpm run build:sea:linux` - Build Linux SEA executable
-- `pnpm run build:binary:all` - Build PKG binaries (legacy)
-
-#### Bundling
-- `pnpm run build:bundle` - Create single-file bundle with Vite
-
-### Code Style & Quality
-
-- **TypeScript**: Full type safety with strict configuration
-- **ESLint**: Code linting with TypeScript support
-- **Prettier**: Code formatting (2 spaces, single quotes, semicolons)
-- **Naming Conventions**: camelCase for variables/functions, PascalCase for types/classes
-
-### Dependencies
-
-#### Runtime Dependencies
-- **express** - Web server framework
-- **chrome-launcher** - Chrome browser launcher  
-- **ws** - WebSocket implementation
-- **http-proxy** - HTTP proxying
-- **winston** - Structured logging
-- **swagger-ui-express** - API documentation
-- **uuid** - Unique identifier generation
-
-#### Development Dependencies  
-- **typescript** - TypeScript compiler
-- **vite** - Fast bundler
-- **eslint** - Code linting
-- **prettier** - Code formatting
-- **pkg** - Binary packaging (legacy)
-- **postject** - SEA binary injection
-
-### Automated Builds
-
-GitHub Actions automatically builds SEA executables for all platforms:
-
-- **Triggers**: Push to `main`/`ts` branches, version tags (`v*`), or pull requests to `main`
-- **Platforms**: Linux, Windows, macOS  
-- **Artifacts**: Available for 30 days after build completion
-- **Releases**: Automatically created for version tags with all platform binaries attached
-
-The build workflow is defined in `.github/workflows/build-sea.yml`.
-
-### Single Executable Applications (SEA)
-
-The project supports Node.js 20+ SEA for creating standalone executables:
-
-- **Configuration**: `sea-config.json` 
-- **Advantages**: Official Node.js solution, no external dependencies
-- **Replaces**: Third-party tools like PKG for better compatibility and performance
-
-## License
-
-ISC License

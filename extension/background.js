@@ -73,8 +73,11 @@ class TabShareExtension {
   async initDevice() {
     try {
       debugLog('Initializing device ID...');
-      // Try to get existing device ID from storage
-      const result = await chrome.storage.local.get(['deviceId']);
+      // Try to get existing device ID and custom bridge URL from storage
+      const result = await chrome.storage.local.get(['deviceId', 'bridgeUrl']);
+      if (result.bridgeUrl && typeof result.bridgeUrl === 'string') {
+        this.defaultBridgeUrl = result.bridgeUrl;
+      }
       
       if (result.deviceId) {
         this.deviceId = result.deviceId;
@@ -481,11 +484,18 @@ class TabShareExtension {
         socket.onopen = () => {
           debugLog(`WebSocket connected for tab ${tabId}`);
           
-          // Send connection info to bridge (simplified like Microsoft's implementation)
+          // Send connection info with deviceId immediately so multi-device routing works before first ping
           const connectionInfo = {
             type: 'connection_info',
+            deviceId: this.deviceId,
             sessionId: connection.sessionId,
-            targetInfo: targetInfo?.targetInfo
+            targetInfo: targetInfo?.targetInfo,
+            deviceInfo: {
+              name: 'Chrome Extension',
+              version: '2.0.0',
+              userAgent: navigator.userAgent || 'Browser-Go-Extension',
+              timestamp: new Date().toISOString()
+            }
           };
           debugLog('Sending connection info:', connectionInfo);
           socket.send(JSON.stringify(connectionInfo));

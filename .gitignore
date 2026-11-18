@@ -1,30 +1,39 @@
-# Built Assets
+# Go Build Artifacts
+bin/
+binary/
+release/
+artifacts/
+.toolchain/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+
+# Legacy Node/TS Assets
 node_modules/
+legacy-ts/node_modules/
+legacy-ts/dist/
+legacy-ts/dist-vite/
 build/
 metrics.json
 extensions/ublocklite
 dist/
 dist-vite/
-binary/
 
-# MAC
+# OS & Editor
 .DS_Store
+.vscode/
+.idea/
 
-# Temp files
+# Runtime & Temp Data
 .no-git/
 *.log
 .*cache*
-
-# Dev Files
 *.env*
-
-# Runtime Data
-browser_data
+browser_data/
 test-*.png
-
-# Ignore all .tgz files
 *.tgz
-
-.vscode
-.runtime
-
+.runtime/
