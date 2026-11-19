@@ -54,6 +54,43 @@ func IsWebSocketUpgrade(r *http.Request) bool {
 		strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
 }
 
+// CheckSameOrigin protects browser-accessible WebSocket endpoints against Cross-Site WebSocket Hijacking (CSWSH).
+// Non-browser clients (Playwright, Go, Node.js, curl) omit the Origin header and are permitted.
+// Browser requests carrying an Origin header must match r.Host (or chrome-extension:// when allowChromeExt is true).
+func CheckSameOrigin(r *http.Request, allowChromeExt bool) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if allowChromeExt && strings.EqualFold(u.Scheme, "chrome-extension") {
+		return true
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
+func sanitizeHeaderValue(v string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == 0 {
+			return -1
+		}
+		return r
+	}, v)
+}
+
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 // Conn is a concurrent-safe RFC 6455 message-oriented WebSocket connection.
 type Conn struct {
 	raw      net.Conn
@@ -430,28 +467,34 @@ func (c *Conn) writeRawFrameLocked(fin bool, opcode byte, payload []byte) error 
 		_, _ = rand.Read(maskKey[:])
 		copy(hdr[hdrLen:hdrLen+4], maskKey[:])
 		hdrLen += 4
-		if _, err := c.raw.Write(hdr[:hdrLen]); err != nil {
-			return err
-		}
 		if pLen > 0 {
-			maskedBuf := make([]byte, pLen)
+			frame := make([]byte, hdrLen+pLen)
+			copy(frame[:hdrLen], hdr[:hdrLen])
+			masked := frame[hdrLen:]
 			for i := 0; i < pLen; i++ {
-				maskedBuf[i] = payload[i] ^ maskKey[i&3]
+				masked[i] = payload[i] ^ maskKey[i&3]
 			}
-			_, err := c.raw.Write(maskedBuf)
+			_, err := c.raw.Write(frame)
 			return err
 		}
-		return nil
+		_, err := c.raw.Write(hdr[:hdrLen])
+		return err
 	}
 
-	if _, err := c.raw.Write(hdr[:hdrLen]); err != nil {
+	if pLen == 0 {
+		_, err := c.raw.Write(hdr[:hdrLen])
 		return err
 	}
-	if pLen > 0 {
-		_, err := c.raw.Write(payload)
+	if hdrLen+pLen <= 4096 {
+		var small [4096]byte
+		copy(small[:hdrLen], hdr[:hdrLen])
+		copy(small[hdrLen:hdrLen+pLen], payload)
+		_, err := c.raw.Write(small[:hdrLen+pLen])
 		return err
 	}
-	return nil
+	bufs := net.Buffers{hdr[:hdrLen], payload}
+	_, err := bufs.WriteTo(c.raw)
+	return err
 }
 
 // ProxyRawWebSocket upgrades the upstream targetURL (forwarding extensions like permessage-deflate),
@@ -536,10 +579,10 @@ func ProxyRawWebSocket(
 	upReq.WriteString("Connection: Upgrade\r\n")
 	fmt.Fprintf(&upReq, "Sec-WebSocket-Key: %s\r\n", secKey)
 	fmt.Fprintf(&upReq, "Sec-WebSocket-Version: %s\r\n", secVer)
-	if ext := r.Header.Get("Sec-WebSocket-Extensions"); ext != "" {
+	if ext := sanitizeHeaderValue(r.Header.Get("Sec-WebSocket-Extensions")); ext != "" {
 		fmt.Fprintf(&upReq, "Sec-WebSocket-Extensions: %s\r\n", ext)
 	}
-	if proto := r.Header.Get("Sec-WebSocket-Protocol"); proto != "" {
+	if proto := sanitizeHeaderValue(r.Header.Get("Sec-WebSocket-Protocol")); proto != "" {
 		fmt.Fprintf(&upReq, "Sec-WebSocket-Protocol: %s\r\n", proto)
 	}
 	upReq.WriteString("\r\n")
@@ -632,7 +675,9 @@ func ProxyRawWebSocket(
 }
 
 func copyWithActivity(dst io.Writer, src io.Reader, onActivity func()) error {
-	buf := make([]byte, 32*1024)
+	bp := copyBufPool.Get().(*[]byte)
+	buf := *bp
+	defer copyBufPool.Put(bp)
 	for {
 		nr, rerr := src.Read(buf)
 		if nr > 0 {

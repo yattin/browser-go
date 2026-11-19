@@ -166,15 +166,21 @@ func (s *MuxSession) writeFrame(fType byte, id uint32, payload []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_ = s.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if _, err := s.conn.Write(hdr[:]); err != nil {
-		_ = s.Close()
-		return err
+	var werr error
+	if len(payload) == 0 {
+		_, werr = s.conn.Write(hdr[:])
+	} else if 9+len(payload) <= 4096 {
+		var small [4096]byte
+		copy(small[:9], hdr[:])
+		copy(small[9:9+len(payload)], payload)
+		_, werr = s.conn.Write(small[:9+len(payload)])
+	} else {
+		bufs := net.Buffers{hdr[:], payload}
+		_, werr = bufs.WriteTo(s.conn)
 	}
-	if len(payload) > 0 {
-		if _, err := s.conn.Write(payload); err != nil {
-			_ = s.Close()
-			return err
-		}
+	if werr != nil {
+		_ = s.Close()
+		return werr
 	}
 	_ = s.conn.SetWriteDeadline(time.Time{})
 	return nil
@@ -274,10 +280,30 @@ func newMuxStream(sess *MuxSession, id uint32) *MuxStream {
 }
 
 func (st *MuxStream) pushData(b []byte) {
+	// Fast path: enqueue immediately when consumer keeps up
+	select {
+	case st.inCh <- b:
+		return
+	case <-st.eofCh:
+		return
+	case <-st.sess.doneCh:
+		return
+	default:
+	}
+
+	// Slow-consumer HoL protection: bound wait time so one stalled stream cannot freeze sibling streams on the mux
+	t := time.NewTimer(10 * time.Second)
+	defer t.Stop()
 	select {
 	case st.inCh <- b:
 	case <-st.eofCh:
 	case <-st.sess.doneCh:
+	case <-t.C:
+		st.remoteClose()
+		st.sess.removeStream(st.id)
+		go func() {
+			_ = st.sess.writeFrame(MuxFrameFIN, st.id, nil)
+		}()
 	}
 }
 

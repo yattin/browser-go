@@ -290,6 +290,7 @@ const poolDashboardHTML = `<!DOCTYPE html>
         const pct = st.max_instances > 0 ? Math.min(100, Math.round((st.current_instances / st.max_instances) * 100)) : 0;
         document.getElementById('kpi-bar').style.width = pct + '%';
 
+        const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         const nc = document.getElementById('nodes-container');
         if (nodes.length === 0) {
           nc.innerHTML = '<div class="empty" style="grid-column: 1 / -1;">暂无已穿透注册的内网节点（启动 browser-go node --pf-bridge=... 即可自动加入）</div>';
@@ -301,17 +302,17 @@ const poolDashboardHTML = `<!DOCTYPE html>
             const usedPct = n.max_instances > 0 ? Math.min(100, Math.round((n.current_instances / n.max_instances) * 100)) : 0;
             const tagsObj = n.tags || {};
             const tagPills = Object.entries(tagsObj).map(([k, v]) =>
-              '<span class="tag" data-tag="' + k + ':' + v + '">' + k + '=' + v + '</span>'
+              '<span class="tag" data-tag="' + esc(k + ':' + v) + '">' + esc(k + '=' + v) + '</span>'
             ).join('');
 
             card.innerHTML =
               '<div class="node-top">' +
-                '<div class="node-name"><span class="dot ' + (n.healthy ? 'ok' : 'bad') + '"></span>' + n.node_id + '</div>' +
-                '<span class="badge-src">' + n.source + '</span>' +
+                '<div class="node-name"><span class="dot ' + (n.healthy ? 'ok' : 'bad') + '"></span>' + esc(n.node_id) + '</div>' +
+                '<span class="badge-src">' + esc(n.source) + '</span>' +
               '</div>' +
               '<div class="node-metrics">' +
-                '<span>槽位: <strong>' + n.current_instances + ' / ' + n.max_instances + '</strong> (余 ' + n.available_slots + ')</span>' +
-                '<span>RTT: <strong>' + n.rtt_ms + ' ms</strong> · WS: ' + n.active_ws + '</span>' +
+                '<span>槽位: <strong>' + Number(n.current_instances || 0) + ' / ' + Number(n.max_instances || 0) + '</strong> (余 ' + Number(n.available_slots || 0) + ')</span>' +
+                '<span>RTT: <strong>' + Number(n.rtt_ms || 0) + ' ms</strong> · WS: ' + Number(n.active_ws || 0) + '</span>' +
               '</div>' +
               '<div class="bar-bg"><div class="bar-fill" style="width:' + usedPct + '%"></div></div>' +
               (tagPills ? '<div class="tags">' + tagPills + '</div>' : '');
@@ -331,7 +332,6 @@ const poolDashboardHTML = `<!DOCTYPE html>
           tbody.innerHTML = '<tr><td colspan="6" class="empty">当前全池无活跃浏览器实例</td></tr>';
         } else {
           tbody.innerHTML = '';
-          const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
           for (const item of instances) {
             const tr = document.createElement('tr');
             const curUrl = item.current_url || '-';

@@ -128,7 +128,7 @@ const nodeDashboardHTML = `<!DOCTYPE html>
       for (const d of dv) {
         const ti = d.connectionInfo?.targetInfo || {};
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td class="mono">' + d.deviceId + '</td><td>' + (d.isConnected ? '🟢 在线' : '🔴 离线') + '</td><td>' + (ti.title || '-') + ' <span class="mono" style="color:var(--muted);">' + (ti.url || '') + '</span></td><td>' + new Date(d.lastSeen).toLocaleTimeString() + '</td>';
+        tr.innerHTML = '<td class="mono">' + esc(d.deviceId) + '</td><td>' + (d.isConnected ? '🟢 在线' : '🔴 离线') + '</td><td>' + esc(ti.title || '-') + ' <span class="mono" style="color:var(--muted);">' + esc(ti.url || '') + '</span></td><td>' + esc(new Date(d.lastSeen).toLocaleTimeString()) + '</td>';
         db.appendChild(tr);
       }
     }

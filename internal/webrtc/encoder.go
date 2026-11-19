@@ -206,16 +206,23 @@ func StartH264PipeEncoder(
 	return e, nil
 }
 
-// PushJPEG overwrites the single latest-frame slot (drop-old policy for constant low latency).
+// PushJPEG copies and overwrites the single latest-frame slot (drop-old policy for constant low latency).
 func (e *H264PipeEncoder) PushJPEG(jpegBytes []byte) {
 	if len(jpegBytes) == 0 {
 		return
 	}
 	cp := make([]byte, len(jpegBytes))
 	copy(cp, jpegBytes)
+	e.PushJPEGOwned(cp)
+}
 
+// PushJPEGOwned takes ownership of a freshly allocated JPEG buffer without an extra heap copy.
+func (e *H264PipeEncoder) PushJPEGOwned(jpegBytes []byte) {
+	if len(jpegBytes) == 0 {
+		return
+	}
 	e.frameMu.Lock()
-	e.latestJPEG = cp
+	e.latestJPEG = jpegBytes
 	e.frameSeq++
 	e.frameMu.Unlock()
 
@@ -242,11 +249,16 @@ func (e *H264PipeEncoder) feedLoop() {
 	defer func() { _ = e.stdin.Close() }()
 
 	minInterval := time.Second / time.Duration(e.fps)
-	idleTicker := time.NewTicker(450 * time.Millisecond) // ~2.2fps idle keepalive so video decodes immediately on static pages
-	defer idleTicker.Stop()
+	// Smart adaptive keepalive: fast 400ms warm-up for first 3 static frames so WebRTC decodes instantly,
+	// then back off to 3s while page is idle to cut static CPU & uplink overhead by >80%.
+	const fastIdle = 400 * time.Millisecond
+	const slowIdle = 3000 * time.Millisecond
+	idleTimer := time.NewTimer(fastIdle)
+	defer idleTimer.Stop()
 
 	var lastSentSeq uint64
 	var lastWrite time.Time
+	var staticRepeats int
 
 	writeLatest := func(force bool) bool {
 		e.frameMu.Lock()
@@ -261,14 +273,39 @@ func (e *H264PipeEncoder) feedLoop() {
 			return true
 		}
 		if elapsed := time.Since(lastWrite); elapsed < minInterval {
-			time.Sleep(minInterval - elapsed)
+			wait := time.NewTimer(minInterval - elapsed)
+			select {
+			case <-e.ctx.Done():
+				wait.Stop()
+				return false
+			case <-wait.C:
+			}
 		}
 		if _, err := e.stdin.Write(frame); err != nil {
 			return false
 		}
+		if seq != lastSentSeq {
+			staticRepeats = 0
+		} else {
+			staticRepeats++
+		}
 		lastSentSeq = seq
 		lastWrite = time.Now()
 		return true
+	}
+
+	resetIdle := func() {
+		next := fastIdle
+		if staticRepeats >= 3 {
+			next = slowIdle
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(next)
 	}
 
 	for {
@@ -279,10 +316,12 @@ func (e *H264PipeEncoder) feedLoop() {
 			if !writeLatest(false) {
 				return
 			}
-		case <-idleTicker.C:
+			resetIdle()
+		case <-idleTimer.C:
 			if !writeLatest(true) {
 				return
 			}
+			resetIdle()
 		}
 	}
 }

@@ -87,11 +87,13 @@ func (p *AnnexBParser) drainNALUs(onAU func(au []byte, isKeyframe bool)) {
 		return
 	}
 	if firstPos > 0 {
-		p.buf = p.buf[firstPos:]
+		rem := copy(p.buf, p.buf[firstPos:])
+		p.buf = p.buf[:rem]
 		firstPos = 0
 	}
 
 	curStart := firstPos + firstLen
+	consumed := 0
 	for {
 		nextPos, nextLen := findStartCode(p.buf, curStart)
 		if nextPos < 0 {
@@ -101,8 +103,16 @@ func (p *AnnexBParser) drainNALUs(onAU func(au []byte, isKeyframe bool)) {
 		if len(nalu) > 0 {
 			p.processNALU(nalu, onAU)
 		}
-		p.buf = p.buf[nextPos:]
-		curStart = nextLen
+		consumed = nextPos
+		curStart = nextPos + nextLen
+	}
+	// Compact remaining tail back to index 0 so the backing array never drifts/grows unboundedly
+	if consumed > 0 {
+		rem := copy(p.buf, p.buf[consumed:])
+		p.buf = p.buf[:rem]
+	} else if firstPos > 0 {
+		rem := copy(p.buf, p.buf[firstPos:])
+		p.buf = p.buf[:rem]
 	}
 }
 

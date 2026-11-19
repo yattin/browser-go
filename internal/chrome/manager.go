@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,9 +23,121 @@ import (
 	"browser-go/internal/logger"
 )
 
-var ErrMaxInstancesReached = errors.New("maximum concurrent instances limit reached")
+var (
+	ErrMaxInstancesReached  = errors.New("maximum concurrent instances limit reached")
+	ErrForbiddenLaunchArg   = errors.New("forbidden Chrome launch argument")
+	ErrInvalidNavigationURL = errors.New("invalid or forbidden navigation URL")
+	ErrInvalidTargetID      = errors.New("invalid Chrome target ID")
+)
 
-var safeUserKeyRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+var (
+	safeUserKeyRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+	safeTargetRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`)
+)
+
+// allowedLaunchFlags defines the strict allowlist of safe Chrome CLI flags clients may pass via `launch.args`.
+// Dangerous flags (e.g. --gpu-launcher, --renderer-cmd-prefix, --user-data-dir, --load-extension, --remote-debugging-*)
+// are always rejected to prevent host command execution (RCE) and profile isolation bypass.
+var allowedBoolLaunchFlags = map[string]bool{
+	"--headless":                     true,
+	"--headless=new":                 true,
+	"--headless=old":                 true,
+	"--incognito":                    true,
+	"--start-maximized":              true,
+	"--mute-audio":                   true,
+	"--hide-scrollbars":              true,
+	"--disable-gpu":                  true,
+	"--disable-dev-shm-usage":        true,
+	"--no-sandbox":                   true,
+	"--disable-setuid-sandbox":       true,
+	"--disable-notifications":        true,
+	"--ignore-certificate-errors":    true,
+	"--disable-extensions":           true,
+	"--disable-default-apps":         true,
+	"--disable-background-networking": true,
+	"--disable-features=TranslateUI": true,
+	"--disable-blink-features=AutomationControlled": true,
+}
+
+var allowedPrefixLaunchFlags = []string{
+	"--proxy-server=",
+	"--proxy-bypass-list=",
+	"--window-size=",
+	"--window-position=",
+	"--lang=",
+	"--accept-lang=",
+	"--user-agent=",
+	"--force-device-scale-factor=",
+	"--autoplay-policy=",
+	"--disable-blink-features=",
+	"--disable-features=",
+	"--enable-features=",
+}
+
+// SanitizeLaunchArgs validates client-supplied Chrome CLI arguments against a strict security allowlist.
+func SanitizeLaunchArgs(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > 32 {
+		return nil, fmt.Errorf("%w: too many launch args (%d)", ErrForbiddenLaunchArg, len(raw))
+	}
+	out := make([]string, 0, len(raw))
+	for _, a := range raw {
+		arg := strings.TrimSpace(a)
+		if arg == "" {
+			continue
+		}
+		if len(arg) > 512 || strings.ContainsAny(arg, "\x00\r\n") {
+			return nil, fmt.Errorf("%w: malformed argument", ErrForbiddenLaunchArg)
+		}
+		lower := strings.ToLower(arg)
+		if allowedBoolLaunchFlags[lower] {
+			out = append(out, arg)
+			continue
+		}
+		ok := false
+		for _, pref := range allowedPrefixLaunchFlags {
+			if strings.HasPrefix(lower, pref) && len(arg) > len(pref) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: %q is not in allowlist", ErrForbiddenLaunchArg, arg)
+		}
+		out = append(out, arg)
+	}
+	return out, nil
+}
+
+// ValidateNavigationURL restricts initial/new-tab URLs to safe web schemes, blocking file://, chrome://, javascript:, etc.
+func ValidateNavigationURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.EqualFold(s, "about:blank") {
+		return "about:blank", nil
+	}
+	if len(s) > 8192 || strings.ContainsAny(s, "\x00\r\n") {
+		return "", fmt.Errorf("%w: contains control characters or exceeds length limit", ErrInvalidNavigationURL)
+	}
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:text/html") {
+		return s, nil
+	}
+	// Bare domain/host (e.g. "bing.com") -> normalize to https://
+	if !strings.Contains(s, "://") && !strings.Contains(s, ":") {
+		return "https://" + s, nil
+	}
+	return "", fmt.Errorf("%w: disallowed scheme in %q", ErrInvalidNavigationURL, s)
+}
+
+// ValidateTargetID ensures a Chrome DevTools target ID contains only safe path characters.
+func ValidateTargetID(id string) error {
+	if !safeTargetRe.MatchString(id) {
+		return fmt.Errorf("%w: %q", ErrInvalidTargetID, id)
+	}
+	return nil
+}
 
 // LaunchParams represents the JSON `launch` query parameter.
 type LaunchParams struct {
@@ -76,7 +189,34 @@ type ManagedInstance struct {
 
 	lastActivityUnixMs atomic.Int64
 	activeConns        atomic.Int32
+	activeTakeovers    atomic.Int32
 	closing            atomic.Bool
+
+	metaMu      sync.Mutex
+	cachedURL   string
+	cachedTitle string
+	cachedAt    time.Time
+}
+
+// TryAcquireTakeover reserves one WebRTC Live View slot up to maxConcurrent per Chrome instance.
+func (m *ManagedInstance) TryAcquireTakeover(maxConcurrent int32) (func(), bool) {
+	if m == nil || maxConcurrent <= 0 {
+		return func() {}, true
+	}
+	for {
+		cur := m.activeTakeovers.Load()
+		if cur >= maxConcurrent {
+			return nil, false
+		}
+		if m.activeTakeovers.CompareAndSwap(cur, cur+1) {
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					m.activeTakeovers.Add(-1)
+				})
+			}, true
+		}
+	}
 }
 
 func (m *ManagedInstance) Touch() {
@@ -209,9 +349,18 @@ func pickFreeLocalPort() (int, error) {
 // Acquire returns a ready *ManagedInstance with activeConns incremented, plus a release closure
 // that MUST be called when the client's CDP WebSocket disconnects.
 func (m *Manager) Acquire(ctx context.Context, startingURL string, params LaunchParams) (*ManagedInstance, func(), error) {
-	if startingURL == "" {
-		startingURL = "about:blank"
+	safeURL, err := ValidateNavigationURL(startingURL)
+	if err != nil {
+		return nil, nil, err
 	}
+	startingURL = safeURL
+
+	safeArgs, err := SanitizeLaunchArgs(params.Args)
+	if err != nil {
+		return nil, nil, err
+	}
+	params.Args = safeArgs
+
 	userRaw := strings.TrimSpace(params.User)
 	isEphemeral := userRaw == ""
 
@@ -563,15 +712,28 @@ func (m *Manager) AttachExisting(userKey string) (*ManagedInstance, func(), erro
 	return inst, m.makeReleaseFunc(inst), nil
 }
 
-// ListTargets fetches active page tabs from a running Chrome instance's local DevTools HTTP endpoint.
+func (m *Manager) lookupRunningPort(userKey string) (int, error) {
+	raw := strings.TrimSpace(userKey)
+	sanitized := sanitizeKey(raw)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range []string{raw, sanitized} {
+		if existing, ok := m.instances[k]; ok && !existing.closing.Load() {
+			return existing.DebugPort, nil
+		}
+	}
+	return 0, fmt.Errorf("browser instance %q not found", userKey)
+}
+
+// ListTargets fetches active page tabs from a running Chrome instance's local DevTools HTTP endpoint
+// without mutating activeConns or resetting idle timestamps.
 func (m *Manager) ListTargets(ctx context.Context, userKey string) ([]TargetSnapshot, error) {
-	inst, release, err := m.AttachExisting(userKey)
+	port, err := m.lookupRunningPort(userKey)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
 
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", inst.DebugPort)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", port)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -597,12 +759,14 @@ func (m *Manager) ListTargets(ctx context.Context, userKey string) ([]TargetSnap
 
 // ActivateTarget brings a specific Chrome page tab to the foreground via DevTools HTTP API.
 func (m *Manager) ActivateTarget(ctx context.Context, userKey, targetID string) error {
-	inst, release, err := m.AttachExisting(userKey)
+	if err := ValidateTargetID(targetID); err != nil {
+		return err
+	}
+	port, err := m.lookupRunningPort(userKey)
 	if err != nil {
 		return err
 	}
-	defer release()
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/activate/%s", inst.DebugPort, targetID)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/activate/%s", port, url.PathEscape(targetID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -617,15 +781,15 @@ func (m *Manager) ActivateTarget(ctx context.Context, userKey, targetID string) 
 
 // CreateTarget opens a new page tab in a running Chrome instance via DevTools HTTP API.
 func (m *Manager) CreateTarget(ctx context.Context, userKey, targetURL string) (*TargetSnapshot, error) {
-	inst, release, err := m.AttachExisting(userKey)
+	safeURL, err := ValidateNavigationURL(targetURL)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	if targetURL == "" {
-		targetURL = "about:blank"
+	port, err := m.lookupRunningPort(userKey)
+	if err != nil {
+		return nil, err
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", inst.DebugPort, targetURL)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", port, url.QueryEscape(safeURL))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -644,12 +808,14 @@ func (m *Manager) CreateTarget(ctx context.Context, userKey, targetURL string) (
 
 // CloseTarget closes a specific page tab in a running Chrome instance via DevTools HTTP API.
 func (m *Manager) CloseTarget(ctx context.Context, userKey, targetID string) error {
-	inst, release, err := m.AttachExisting(userKey)
+	if err := ValidateTargetID(targetID); err != nil {
+		return err
+	}
+	port, err := m.lookupRunningPort(userKey)
 	if err != nil {
 		return err
 	}
-	defer release()
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/close/%s", inst.DebugPort, targetID)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/close/%s", port, url.PathEscape(targetID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -662,52 +828,87 @@ func (m *Manager) CloseTarget(ctx context.Context, userKey, targetID string) err
 	return nil
 }
 
-// ListInstances returns snapshots of all active Chrome instances.
+// ListInstances returns snapshots of all active Chrome instances, probing current URLs concurrently with a 1s TTL cache.
 func (m *Manager) ListInstances() []InstanceSnapshot {
 	now := time.Now()
 	m.mu.Lock()
+	type instPair struct {
+		inst *ManagedInstance
+		idx  int
+	}
 	out := make([]InstanceSnapshot, 0, len(m.instances))
+	toProbe := make([]instPair, 0, len(m.instances))
 	for _, inst := range m.instances {
 		last := inst.LastActivity()
 		idleSec := int64(now.Sub(last).Seconds())
 		if idleSec < 0 {
 			idleSec = 0
 		}
-		out = append(out, InstanceSnapshot{
+		snap := InstanceSnapshot{
 			UserID:          inst.Key,
 			LastActivity:    last.UTC().Format(time.RFC3339Nano),
 			IdleTimeSeconds: idleSec,
 			ActiveConns:     inst.ActiveConnections(),
 			Ephemeral:       inst.IsEphemeral,
 			DebugPort:       inst.DebugPort,
-		})
+		}
+		inst.metaMu.Lock()
+		fresh := now.Sub(inst.cachedAt) < time.Second
+		if fresh {
+			snap.CurrentURL = inst.cachedURL
+			snap.CurrentTitle = inst.cachedTitle
+		}
+		inst.metaMu.Unlock()
+
+		idx := len(out)
+		out = append(out, snap)
+		if !fresh && inst.DebugPort > 0 {
+			toProbe = append(toProbe, instPair{inst: inst, idx: idx})
+		}
 	}
 	m.mu.Unlock()
 
-	// Enrich each live instance with its current active page URL & title (fast local loopback probe)
-	for i := range out {
-		if out[i].DebugPort <= 0 {
-			continue
-		}
-		pCtx, pCancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
-		endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", out[i].DebugPort)
-		req, err := http.NewRequestWithContext(pCtx, http.MethodGet, endpoint, nil)
-		if err == nil {
-			if resp, rErr := m.httpClient.Do(req); rErr == nil {
+	if len(toProbe) > 0 {
+		var pwg sync.WaitGroup
+		for _, pair := range toProbe {
+			pwg.Add(1)
+			go func(p instPair) {
+				defer pwg.Done()
+				pCtx, pCancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+				defer pCancel()
+				endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", p.inst.DebugPort)
+				req, err := http.NewRequestWithContext(pCtx, http.MethodGet, endpoint, nil)
+				if err != nil {
+					return
+				}
+				resp, rErr := m.httpClient.Do(req)
+				if rErr != nil {
+					return
+				}
 				var all []TargetSnapshot
-				if json.NewDecoder(resp.Body).Decode(&all) == nil {
-					for _, t := range all {
-						if t.Type == "page" {
-							out[i].CurrentURL = t.URL
-							out[i].CurrentTitle = t.Title
-							break
-						}
+				decErr := json.NewDecoder(resp.Body).Decode(&all)
+				_ = resp.Body.Close()
+				if decErr != nil {
+					return
+				}
+				var curURL, curTitle string
+				for _, t := range all {
+					if t.Type == "page" {
+						curURL = t.URL
+						curTitle = t.Title
+						break
 					}
 				}
-				_ = resp.Body.Close()
-			}
+				p.inst.metaMu.Lock()
+				p.inst.cachedURL = curURL
+				p.inst.cachedTitle = curTitle
+				p.inst.cachedAt = time.Now()
+				p.inst.metaMu.Unlock()
+				out[p.idx].CurrentURL = curURL
+				out[p.idx].CurrentTitle = curTitle
+			}(pair)
 		}
-		pCancel()
+		pwg.Wait()
 	}
 
 	sort.Slice(out, func(i, j int) bool {

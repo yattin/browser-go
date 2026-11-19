@@ -145,6 +145,9 @@ func (s *NodeServer) Start() error {
 		}()
 		s.log.Infof("Browser-Go Node [%s] listening on http://%s", s.cfg.NodeID, ln.Addr().String())
 		s.log.Infof("API Documentation: http://127.0.0.1:%d/api-docs", s.BoundPort())
+		if s.cfg.Token == "browser-go-token" && !isLoopbackOrInproc(s.cfg.Host) {
+			s.log.Warnf("SECURITY WARNING: Node is listening on non-loopback address %q with the default token; set a strong --token and --strict-auth for production!", s.cfg.Host)
+		}
 	} else {
 		s.log.Infof("Browser-Go Node [%s] started in stealth tunnel-only mode (--port=0)", s.cfg.NodeID)
 	}
@@ -429,6 +432,10 @@ func (s *NodeServer) handleBrowserTargets(w http.ResponseWriter, r *http.Request
 }
 
 func (s *NodeServer) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
+	if !wsutil.CheckSameOrigin(r, false) {
+		http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+		return
+	}
 	if !s.authorizeManagement(w, r) {
 		return
 	}
@@ -462,6 +469,10 @@ func (s *NodeServer) handleBrowserAttach(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *NodeServer) handleWebRTCSignal(w http.ResponseWriter, r *http.Request) {
+	if !wsutil.CheckSameOrigin(r, false) {
+		http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+		return
+	}
 	if !s.authorizeManagement(w, r) {
 		return
 	}
@@ -575,6 +586,10 @@ func (s *NodeServer) handleRootOrWebSocket(w http.ResponseWriter, r *http.Reques
 
 	switch r.URL.Path {
 	case "/cdp":
+		if !wsutil.CheckSameOrigin(r, false) {
+			http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+			return
+		}
 		if !s.authorizeManagement(w, r) {
 			return
 		}
@@ -588,6 +603,10 @@ func (s *NodeServer) handleRootOrWebSocket(w http.ResponseWriter, r *http.Reques
 		return
 
 	case "/extension":
+		if !wsutil.CheckSameOrigin(r, true) {
+			http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+			return
+		}
 		if !s.authorizeManagement(w, r) {
 			return
 		}
@@ -640,6 +659,10 @@ func (s *NodeServer) handleBrowserLaunchWS(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		if errors.Is(err, chrome.ErrMaxInstancesReached) {
 			http.Error(w, "Maximum concurrent instances limit reached, please try again later", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, chrome.ErrForbiddenLaunchArg) || errors.Is(err, chrome.ErrInvalidNavigationURL) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.log.Errorf("Failed to launch/acquire Chrome instance: %v", err)
@@ -725,17 +748,18 @@ const apiDocsHTML = `<!DOCTYPE html>
   <main id="endpoints">Loading specification...</main>
   <script>
     fetch('/openapi.json').then(r => r.json()).then(spec => {
+      const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const root = document.getElementById('endpoints');
       root.innerHTML = '';
       const info = document.createElement('div');
       info.className = 'card';
-      info.innerHTML = '<strong>' + (spec.info?.title || 'Browser-Go') + ' v' + (spec.info?.version || '2.0') + '</strong><p>' + (spec.info?.description || '') + '</p>';
+      info.innerHTML = '<strong>' + esc(spec.info?.title || 'Browser-Go') + ' v' + esc(spec.info?.version || '2.0') + '</strong><p>' + esc(spec.info?.description || '') + '</p>';
       root.appendChild(info);
       for (const [p, ops] of Object.entries(spec.paths || {})) {
         for (const [m, detail] of Object.entries(ops)) {
           const el = document.createElement('div');
           el.className = 'card';
-          el.innerHTML = '<div><span class="method">' + m.toUpperCase() + '</span><span class="path">' + p + '</span></div><p>' + (detail.summary || '') + ' — ' + (detail.description || '') + '</p>';
+          el.innerHTML = '<div><span class="method">' + esc(m.toUpperCase()) + '</span><span class="path">' + esc(p) + '</span></div><p>' + esc(detail.summary || '') + ' — ' + esc(detail.description || '') + '</p>';
           root.appendChild(el);
         }
       }

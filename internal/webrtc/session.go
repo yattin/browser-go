@@ -65,6 +65,14 @@ func ServeTakeoverSession(
 	}
 	defer releaseInst()
 
+	// Cap concurrent Live View sessions per Chrome instance (max 2) to prevent ffmpeg storm & screencast fighting
+	releaseTakeover, allowed := inst.TryAcquireTakeover(2)
+	if !allowed {
+		_ = sigWS.WriteJSON(SignalMessage{Type: "error", Error: "该浏览器实例同时接管人数已达上限 (2)，请先关闭其他接管窗口"})
+		return
+	}
+	defer releaseTakeover()
+
 	targets, err := chromeMgr.ListTargets(ctx, userKey)
 	if err != nil || len(targets) == 0 {
 		_ = sigWS.WriteJSON(SignalMessage{Type: "error", Error: "No active page targets in browser instance"})
@@ -525,6 +533,57 @@ func ServeTakeoverSession(
 		}
 	}()
 
+	// Single-slot drop-old async sender for Tunnel WebSocket fallback so slow clients never block CDP event reading
+	var fallbackFrameMu sync.Mutex
+	var latestFallbackFrame []byte
+	fallbackSignal := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-sessCtx.Done():
+				return
+			case <-fallbackSignal:
+				fallbackFrameMu.Lock()
+				frame := latestFallbackFrame
+				latestFallbackFrame = nil
+				fallbackFrameMu.Unlock()
+				if len(frame) > 0 {
+					_ = sigWS.WriteBinary(frame)
+				}
+			}
+		}
+	}()
+
+	// Coalesced target-list refresh to avoid goroutine stampedes during rapid redirects
+	var refreshingTargets atomic.Bool
+	triggerTargetRefresh := func(overrideURL string) {
+		if !refreshingTargets.CompareAndSwap(false, true) {
+			return
+		}
+		go func() {
+			defer refreshingTargets.Store(false)
+			tCtx, tCancel := context.WithTimeout(sessCtx, 2*time.Second)
+			defer tCancel()
+			if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil {
+				curURL := overrideURL
+				if curURL == "" {
+					for _, t := range fresh {
+						if t.ID == activeTarget.ID {
+							curURL = t.URL
+							break
+						}
+					}
+				}
+				_ = sigWS.WriteJSON(SignalMessage{
+					Type:           "nav",
+					URL:            curURL,
+					ActiveTargetID: activeTarget.ID,
+					Targets:        fresh,
+				})
+			}
+		}()
+	}
+
 	// Read CDP events from Chrome: feed screencast frames to H.264 encoder / DataChannel / Tunnel fallback
 	var lastW, lastH float64
 	go func() {
@@ -580,18 +639,7 @@ func ServeTakeoverSession(
 						URL:            fn.Frame.URL,
 						ActiveTargetID: activeTarget.ID,
 					})
-					go func(navURL string) {
-						tCtx, tCancel := context.WithTimeout(sessCtx, 2*time.Second)
-						defer tCancel()
-						if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil {
-							_ = sigWS.WriteJSON(SignalMessage{
-								Type:           "nav",
-								URL:            navURL,
-								ActiveTargetID: activeTarget.ID,
-								Targets:        fresh,
-							})
-						}
-					}(fn.Frame.URL)
+					triggerTargetRefresh(fn.Frame.URL)
 				}
 				continue
 
@@ -609,25 +657,7 @@ func ServeTakeoverSession(
 				continue
 
 			case "Page.loadEventFired", "Page.domContentEventFired":
-				go func() {
-					tCtx, tCancel := context.WithTimeout(sessCtx, 2*time.Second)
-					defer tCancel()
-					if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil {
-						curURL := ""
-						for _, t := range fresh {
-							if t.ID == activeTarget.ID {
-								curURL = t.URL
-								break
-							}
-						}
-						_ = sigWS.WriteJSON(SignalMessage{
-							Type:           "nav",
-							URL:            curURL,
-							ActiveTargetID: activeTarget.ID,
-							Targets:        fresh,
-						})
-					}
-				}()
+				triggerTargetRefresh("")
 				continue
 			}
 
@@ -662,10 +692,16 @@ func ServeTakeoverSession(
 				}
 
 				if fallbackMode.Load() {
-					// Tunnel WebSocket fallback: send raw binary JPEG frame directly
-					_ = sigWS.WriteBinary(jpegBytes)
+					// Tunnel WebSocket fallback: overwrite latest slot and signal async sender (drop-old, never blocks CDP loop)
+					fallbackFrameMu.Lock()
+					latestFallbackFrame = jpegBytes
+					fallbackFrameMu.Unlock()
+					select {
+					case fallbackSignal <- struct{}{}:
+					default:
+					}
 				} else if curEnc := h264EncPtr.Load(); curEnc != nil && videoMode == "rtp" {
-					curEnc.PushJPEG(jpegBytes)
+					curEnc.PushJPEGOwned(jpegBytes)
 				} else if dc := videoDC.Load(); dc != nil && dc.ReadyState() == pionwebrtc.DataChannelStateOpen {
 					// Zero-ffmpeg unordered WebRTC DataChannel binary JPEG frame
 					if dc.BufferedAmount() < 512*1024 {

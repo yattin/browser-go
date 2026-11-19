@@ -308,6 +308,9 @@ func (gw *Gateway) Start() error {
 	}()
 
 	gw.log.Infof("Browser-Go Pool Gateway listening on http://%s", ln.Addr().String())
+	if gw.cfg.Token == "browser-go-token" && gw.cfg.Host != "127.0.0.1" && gw.cfg.Host != "localhost" && gw.cfg.Host != "::1" {
+		gw.log.Warnf("SECURITY WARNING: Pool Gateway is listening on %q with the default token; set a strong --token and --strict-auth for production!", gw.cfg.Host)
+	}
 	return nil
 }
 
@@ -951,31 +954,52 @@ func (gw *Gateway) resolveNodeForUser(ctx context.Context, userID, explicitNode 
 	}
 	gw.mu.RUnlock()
 
+	// Parallel fan-out across healthy nodes with cancel-on-first-hit to avoid serial RTT latency
+	scanCtx, scanCancel := context.WithCancel(ctx)
+	defer scanCancel()
+	foundCh := make(chan *backendNode, 1)
+	var swg sync.WaitGroup
 	for _, nd := range allNodes {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nd.BaseHTTP+"/api/v1/browser/list", nil)
-		if err != nil {
-			continue
-		}
-		if gw.cfg.Token != "" {
-			req.Header.Set("X-API-Token", gw.cfg.Token)
-		}
-		resp, err := nd.httpClient.Do(req)
-		if err != nil {
-			continue
-		}
-		var body struct {
-			Data []chrome.InstanceSnapshot `json:"data"`
-		}
-		decErr := json.NewDecoder(resp.Body).Decode(&body)
-		_ = resp.Body.Close()
-		if decErr != nil {
-			continue
-		}
-		for _, it := range body.Data {
-			if it.UserID == userID {
-				return nd, nil
+		swg.Add(1)
+		go func(target *backendNode) {
+			defer swg.Done()
+			req, err := http.NewRequestWithContext(scanCtx, http.MethodGet, target.BaseHTTP+"/api/v1/browser/list", nil)
+			if err != nil {
+				return
 			}
-		}
+			if gw.cfg.Token != "" {
+				req.Header.Set("X-API-Token", gw.cfg.Token)
+			}
+			resp, err := target.httpClient.Do(req)
+			if err != nil {
+				return
+			}
+			var body struct {
+				Data []chrome.InstanceSnapshot `json:"data"`
+			}
+			decErr := json.NewDecoder(resp.Body).Decode(&body)
+			_ = resp.Body.Close()
+			if decErr != nil {
+				return
+			}
+			for _, it := range body.Data {
+				if it.UserID == userID {
+					select {
+					case foundCh <- target:
+						scanCancel()
+					default:
+					}
+					return
+				}
+			}
+		}(nd)
+	}
+	go func() {
+		swg.Wait()
+		close(foundCh)
+	}()
+	if hit, ok := <-foundCh; ok && hit != nil {
+		return hit, nil
 	}
 	return nil, fmt.Errorf("browser instance %q not found across pool", userID)
 }
@@ -1017,6 +1041,10 @@ func (gw *Gateway) handlePoolTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (gw *Gateway) handlePoolAttach(w http.ResponseWriter, r *http.Request) {
+	if !wsutil.CheckSameOrigin(r, false) {
+		http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+		return
+	}
 	if !gw.checkManagementAuth(w, r) {
 		return
 	}
@@ -1043,6 +1071,10 @@ func (gw *Gateway) handlePoolAttach(w http.ResponseWriter, r *http.Request) {
 }
 
 func (gw *Gateway) handlePoolWebRTCSignal(w http.ResponseWriter, r *http.Request) {
+	if !wsutil.CheckSameOrigin(r, false) {
+		http.Error(w, "Cross-origin WebSocket rejected", http.StatusForbidden)
+		return
+	}
 	if !gw.checkManagementAuth(w, r) {
 		return
 	}
