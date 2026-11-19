@@ -518,6 +518,15 @@ func (m *Manager) KillInstance(userKey string) (bool, error) {
 	return true, err
 }
 
+// TargetSnapshot represents an individual tab/page target returned by Chrome's `/json/list`.
+type TargetSnapshot struct {
+	ID                   string `json:"id"`
+	Type                 string `json:"type"`
+	Title                string `json:"title"`
+	URL                  string `json:"url"`
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl,omitempty"`
+}
+
 // HasInstance checks whether an active instance exists for userKey.
 func (m *Manager) HasInstance(userKey string) bool {
 	m.mu.Lock()
@@ -527,6 +536,61 @@ func (m *Manager) HasInstance(userKey string) bool {
 	}
 	_, ok := m.instances[sanitizeKey(userKey)]
 	return ok
+}
+
+// AttachExisting attaches a Live View / DevTools client to an already-running Chrome instance
+// without spawning a new browser, incrementing activeConns so idle GC will not evict it during takeover.
+func (m *Manager) AttachExisting(userKey string) (*ManagedInstance, func(), error) {
+	candidates := []string{userKey, sanitizeKey(userKey)}
+	m.mu.Lock()
+	var inst *ManagedInstance
+	for _, k := range candidates {
+		if existing, ok := m.instances[k]; ok && !existing.closing.Load() {
+			inst = existing
+			break
+		}
+	}
+	if inst == nil {
+		m.mu.Unlock()
+		return nil, nil, fmt.Errorf("browser instance %q not found", userKey)
+	}
+	inst.activeConns.Add(1)
+	inst.Touch()
+	m.mu.Unlock()
+
+	return inst, m.makeReleaseFunc(inst), nil
+}
+
+// ListTargets fetches active page tabs from a running Chrome instance's local DevTools HTTP endpoint.
+func (m *Manager) ListTargets(ctx context.Context, userKey string) ([]TargetSnapshot, error) {
+	inst, release, err := m.AttachExisting(userKey)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", inst.DebugPort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var all []TargetSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
+		return nil, err
+	}
+	pages := make([]TargetSnapshot, 0, len(all))
+	for _, t := range all {
+		if t.Type == "page" {
+			pages = append(pages, t)
+		}
+	}
+	return pages, nil
 }
 
 // ListInstances returns snapshots of all active Chrome instances.

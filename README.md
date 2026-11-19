@@ -62,3 +62,7 @@ proxyforge server -P 127.0.0.1:33080 -C srv.crt -K srv.key --ca-bundle ca.crt -r
   --pf-bridge=127.0.0.1:33080 --pf-key=node-01 \
   --pf-cert=cli.crt --pf-key-file=cli.key --pf-ca=ca.crt --pf-p2p
 ```
+
+### 4. Web Dashboard (`/dashboard`), Background `--daemon`, and Windows SCM Service
+- Open `http://<pool-or-node>:3000/dashboard` for real-time node slot matrix, active instance eviction, and interactive Playwright code generation.
+- Run `--daemon` to detach into background, or manage native Windows services (`browser-go install | uninstall | start | stop | status --json`).

@@ -3,9 +3,11 @@ package pool
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,9 +21,12 @@ import (
 	browsergo "browser-go"
 	"browser-go/internal/chrome"
 	"browser-go/internal/config"
+	"browser-go/internal/liveview"
 	"browser-go/internal/logger"
+	bgwebrtc "browser-go/internal/webrtc"
 	"browser-go/internal/wsutil"
 	"browser-go/pkg/pftunnel"
+	pionwebrtc "github.com/pion/webrtc/v4"
 )
 
 type backendNode struct {
@@ -44,23 +49,20 @@ type backendNode struct {
 	AvailableSlots   int
 	Tags             map[string]string
 
-	inflightConns atomic.Int32
-	activeWS      atomic.Int32
+	inflightHandshakes atomic.Int32
+	activeWS           atomic.Int32
 }
 
 func (n *backendNode) effectiveAvailableSlots() int {
 	n.mu.RLock()
-	healthy := n.Healthy
-	avail := n.AvailableSlots
-	n.mu.RUnlock()
-	if !healthy {
+	defer n.mu.RUnlock()
+	if !n.Healthy {
 		return 0
 	}
-	eff := avail - int(n.inflightConns.Load())
-	if eff < 0 {
+	if n.AvailableSlots < 0 {
 		return 0
 	}
-	return eff
+	return n.AvailableSlots
 }
 
 func (n *backendNode) matchesTags(required map[string]string) bool {
@@ -94,9 +96,10 @@ type NodeStatusView struct {
 
 // Gateway is the central multi-node CDP Browser Pool Scheduler & ProxyForge Bridge Gateway.
 type Gateway struct {
-	cfg    config.PoolConfig
-	log    *logger.Logger
-	bridge *pftunnel.EmbeddedBridge
+	cfg     config.PoolConfig
+	log     *logger.Logger
+	bridge  *pftunnel.EmbeddedBridge
+	turnSrv *bgwebrtc.EmbeddedTurnServer
 
 	httpSrv *http.Server
 	tcpLn   net.Listener
@@ -265,9 +268,28 @@ func (gw *Gateway) Start() error {
 		}
 	}
 
+	if strings.TrimSpace(gw.cfg.WebRTC.TURNListen) != "" {
+		ts, err := bgwebrtc.StartEmbeddedTurnServer(
+			gw.cfg.WebRTC.TURNListen,
+			gw.cfg.WebRTC.TURNPublicIP,
+			gw.cfg.WebRTC.TURNSecret,
+			gw.log,
+		)
+		if err != nil {
+			if gw.bridge != nil {
+				gw.bridge.Stop()
+			}
+			return fmt.Errorf("start embedded TURN server: %w", err)
+		}
+		gw.turnSrv = ts
+	}
+
 	bindAddr := net.JoinHostPort(gw.cfg.Host, strconv.Itoa(gw.cfg.Port))
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
+		if gw.turnSrv != nil {
+			_ = gw.turnSrv.Close()
+		}
 		if gw.bridge != nil {
 			gw.bridge.Stop()
 		}
@@ -309,6 +331,9 @@ func (gw *Gateway) Shutdown(ctx context.Context) error {
 		_ = gw.tcpLn.Close()
 	}
 	err := gw.httpSrv.Shutdown(ctx)
+	if gw.turnSrv != nil {
+		_ = gw.turnSrv.Close()
+	}
 	if gw.bridge != nil {
 		gw.bridge.Stop()
 	}
@@ -415,9 +440,18 @@ func (gw *Gateway) probeSingleNode(nd *backendNode) int {
 	nd.LastProbe = time.Now()
 	nd.LastError = ""
 	nd.RTTMs = rtt
-	nd.CurrentInstances = payload.Data.CurrentInstances
-	nd.MaxInstances = payload.Data.MaxInstances
-	nd.AvailableSlots = payload.Data.AvailableSlots
+	// Only overwrite optimistic slot counts when no upgrade handshake is mid-flight to this node
+	if nd.inflightHandshakes.Load() == 0 {
+		nd.CurrentInstances = payload.Data.CurrentInstances
+		nd.MaxInstances = payload.Data.MaxInstances
+		nd.AvailableSlots = payload.Data.AvailableSlots
+	} else {
+		nd.MaxInstances = payload.Data.MaxInstances
+		if payload.Data.AvailableSlots < nd.AvailableSlots {
+			nd.CurrentInstances = payload.Data.CurrentInstances
+			nd.AvailableSlots = payload.Data.AvailableSlots
+		}
+	}
 	if len(payload.Data.Tags) > 0 {
 		if nd.Tags == nil {
 			nd.Tags = make(map[string]string)
@@ -432,18 +466,24 @@ func (gw *Gateway) probeSingleNode(nd *backendNode) int {
 }
 
 // selectNode chooses the best healthy node honoring sticky `user` affinity, tag filters, and wait queue.
-func (gw *Gateway) selectNode(ctx context.Context, user string, requiredTags map[string]string, explicitNode string) (*backendNode, func(), error) {
+func (gw *Gateway) selectNode(ctx context.Context, user string, requiredTags map[string]string, explicitNode string) (*backendNode, func(), func(), error) {
 	deadline := time.Now().Add(gw.cfg.QueueTimeout)
 
 	for {
-		nd, err := gw.tryPickNodeOnce(user, requiredTags, explicitNode)
+		nd, consumedNewSlot, err := gw.tryPickNodeOnce(user, requiredTags, explicitNode)
 		if nd != nil {
-			nd.inflightConns.Add(1)
+			nd.inflightHandshakes.Add(1)
 			nd.activeWS.Add(1)
-			var once sync.Once
+			var handshookOnce sync.Once
+			markHandshook := func() {
+				handshookOnce.Do(func() {
+					nd.inflightHandshakes.Add(-1)
+				})
+			}
+			var releaseOnce sync.Once
 			release := func() {
-				once.Do(func() {
-					nd.inflightConns.Add(-1)
+				markHandshook()
+				releaseOnce.Do(func() {
 					nd.activeWS.Add(-1)
 					go func() {
 						gw.probeSingleNode(nd)
@@ -451,14 +491,15 @@ func (gw *Gateway) selectNode(ctx context.Context, user string, requiredTags map
 					}()
 				})
 			}
-			return nd, release, nil
+			_ = consumedNewSlot
+			return nd, markHandshook, release, nil
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if gw.cfg.QueueTimeout <= 0 || time.Now().After(deadline) {
-			return nil, nil, chrome.ErrMaxInstancesReached
+			return nil, nil, nil, chrome.ErrMaxInstancesReached
 		}
 
 		waitDur := time.Until(deadline)
@@ -469,7 +510,7 @@ func (gw *Gateway) selectNode(ctx context.Context, user string, requiredTags map
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return nil, nil, ctx.Err()
+			return nil, nil, nil, ctx.Err()
 		case <-gw.slotNotify:
 			t.Stop()
 		case <-t.C:
@@ -478,26 +519,30 @@ func (gw *Gateway) selectNode(ctx context.Context, user string, requiredTags map
 	}
 }
 
-func (gw *Gateway) tryPickNodeOnce(user string, requiredTags map[string]string, explicitNode string) (*backendNode, error) {
+func (gw *Gateway) tryPickNodeOnce(user string, requiredTags map[string]string, explicitNode string) (*backendNode, bool, error) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
 	if len(gw.nodes) == 0 {
-		return nil, errors.New("no browser nodes registered in pool")
+		return nil, false, errors.New("no browser nodes registered in pool")
 	}
 
 	if explicitNode != "" {
 		nd, ok := gw.nodes[explicitNode]
 		if !ok {
-			return nil, fmt.Errorf("requested node %q not found", explicitNode)
+			return nil, false, fmt.Errorf("requested node %q not found", explicitNode)
 		}
-		nd.mu.RLock()
+		nd.mu.Lock()
 		h := nd.Healthy
-		nd.mu.RUnlock()
-		if !h {
-			return nil, fmt.Errorf("requested node %q is unhealthy", explicitNode)
+		if h && nd.AvailableSlots > 0 {
+			nd.CurrentInstances++
+			nd.AvailableSlots--
 		}
-		return nd, nil
+		nd.mu.Unlock()
+		if !h {
+			return nil, false, fmt.Errorf("requested node %q is unhealthy", explicitNode)
+		}
+		return nd, true, nil
 	}
 
 	// 1. Check sticky user binding first (reusing warm persistent user profile doesn't consume a new slot!)
@@ -508,7 +553,7 @@ func (gw *Gateway) tryPickNodeOnce(user string, requiredTags map[string]string, 
 				healthy := boundNode.Healthy
 				boundNode.mu.RUnlock()
 				if healthy && boundNode.matchesTags(requiredTags) {
-					return boundNode, nil
+					return boundNode, false, nil
 				}
 			}
 			delete(gw.userBindings, user)
@@ -542,21 +587,35 @@ func (gw *Gateway) tryPickNodeOnce(user string, requiredTags map[string]string, 
 	}
 
 	if !anyMatchingNode {
-		return nil, errors.New("no healthy browser nodes match requested tags")
+		return nil, false, errors.New("no healthy browser nodes match requested tags")
 	}
-	if best != nil && user != "" {
-		gw.userBindings[user] = best.ID
+	if best != nil {
+		best.mu.Lock()
+		if best.AvailableSlots > 0 {
+			best.CurrentInstances++
+			best.AvailableSlots--
+		}
+		best.mu.Unlock()
+		if user != "" {
+			gw.userBindings[user] = best.ID
+		}
 	}
-	return best, nil
+	return best, best != nil, nil
 }
 
 func (gw *Gateway) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", gw.handleHealth)
+	mux.HandleFunc("/dashboard", gw.handleDashboard)
+	mux.HandleFunc("/dashboard/", gw.handleDashboard)
+	mux.HandleFunc("/liveview.js", liveview.ServeJS)
 	mux.HandleFunc("/json/version", gw.handleJSONVersion)
 	mux.HandleFunc("/api/v1/pool/nodes", gw.handlePoolNodes)
 	mux.HandleFunc("/api/v1/browser/stats", gw.handlePoolStats)
 	mux.HandleFunc("/api/v1/browser/list", gw.handlePoolList)
 	mux.HandleFunc("/api/v1/browser/stop", gw.handlePoolStop)
+	mux.HandleFunc("/api/v1/browser/targets", gw.handlePoolTargets)
+	mux.HandleFunc("/api/v1/browser/attach", gw.handlePoolAttach)
+	mux.HandleFunc("/api/v1/browser/webrtc/signal", gw.handlePoolWebRTCSignal)
 	mux.HandleFunc("/", gw.handleRootOrCDPProxy)
 }
 
@@ -859,6 +918,173 @@ func (gw *Gateway) handlePoolStop(w http.ResponseWriter, r *http.Request) {
 	writePoolJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": "Browser instance not found across pool"})
 }
 
+func (gw *Gateway) resolveNodeForUser(ctx context.Context, userID, explicitNode string) (*backendNode, error) {
+	gw.mu.RLock()
+	if explicitNode != "" {
+		nd, ok := gw.nodes[explicitNode]
+		gw.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("node %q not found", explicitNode)
+		}
+		return nd, nil
+	}
+	if userID != "" {
+		if boundID, ok := gw.userBindings[userID]; ok {
+			if nd, exists := gw.nodes[boundID]; exists {
+				gw.mu.RUnlock()
+				return nd, nil
+			}
+		}
+	}
+	allNodes := make([]*backendNode, 0, len(gw.nodes))
+	for _, nd := range gw.nodes {
+		nd.mu.RLock()
+		h := nd.Healthy
+		nd.mu.RUnlock()
+		if h {
+			allNodes = append(allNodes, nd)
+		}
+	}
+	gw.mu.RUnlock()
+
+	for _, nd := range allNodes {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nd.BaseHTTP+"/api/v1/browser/list", nil)
+		if err != nil {
+			continue
+		}
+		if gw.cfg.Token != "" {
+			req.Header.Set("X-API-Token", gw.cfg.Token)
+		}
+		resp, err := nd.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		var body struct {
+			Data []chrome.InstanceSnapshot `json:"data"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		_ = resp.Body.Close()
+		if decErr != nil {
+			continue
+		}
+		for _, it := range body.Data {
+			if it.UserID == userID {
+				return nd, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("browser instance %q not found across pool", userID)
+}
+
+func (gw *Gateway) handlePoolTargets(w http.ResponseWriter, r *http.Request) {
+	if !gw.checkManagementAuth(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		writePoolJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	nd, err := gw.resolveNodeForUser(r.Context(), userID, nodeID)
+	if err != nil {
+		writePoolJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+
+	u := nd.BaseHTTP + "/api/v1/browser/targets?user_id=" + url.QueryEscape(userID)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+	if err != nil {
+		writePoolJSON(w, http.StatusInternalServerError, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	if gw.cfg.Token != "" {
+		req.Header.Set("X-API-Token", gw.cfg.Token)
+	}
+	resp, err := nd.httpClient.Do(req)
+	if err != nil {
+		writePoolJSON(w, http.StatusBadGateway, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (gw *Gateway) handlePoolAttach(w http.ResponseWriter, r *http.Request) {
+	if !gw.checkManagementAuth(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		http.Error(w, "Missing user_id parameter", http.StatusBadRequest)
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	nd, err := gw.resolveNodeForUser(r.Context(), userID, nodeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	upQuery := r.URL.Query()
+	upQuery.Del("node_id")
+	if gw.cfg.Token != "" {
+		upQuery.Set("token", gw.cfg.Token)
+	}
+	targetWS := nd.BaseWS + "/api/v1/browser/attach?" + upQuery.Encode()
+	w.Header().Set("X-Browser-Node", nd.ID)
+	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nd.dialFn, nil)
+}
+
+func (gw *Gateway) handlePoolWebRTCSignal(w http.ResponseWriter, r *http.Request) {
+	if !gw.checkManagementAuth(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		http.Error(w, "Missing user_id parameter", http.StatusBadRequest)
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	nd, err := gw.resolveNodeForUser(r.Context(), userID, nodeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	upQuery := r.URL.Query()
+	upQuery.Del("node_id")
+	if gw.cfg.Token != "" {
+		upQuery.Set("token", gw.cfg.Token)
+	}
+
+	// Inject short-lived embedded TURN credentials + configured external STUN/TURN servers into node signal URL
+	var extraICE []pionwebrtc.ICEServer
+	if gw.turnSrv != nil {
+		extraICE = append(extraICE, gw.turnSrv.IssueICEServer(time.Hour))
+	}
+	for _, rawTurn := range gw.cfg.WebRTC.TURNServers {
+		if srv, ok := bgwebrtc.ParseExternalTURN(rawTurn); ok {
+			extraICE = append(extraICE, srv)
+		}
+	}
+	if len(gw.cfg.WebRTC.STUNServers) > 0 {
+		extraICE = append(extraICE, pionwebrtc.ICEServer{URLs: gw.cfg.WebRTC.STUNServers})
+	}
+	if len(extraICE) > 0 {
+		if rawJSON, mErr := json.Marshal(extraICE); mErr == nil {
+			upQuery.Set("ice_b64", base64.RawURLEncoding.EncodeToString(rawJSON))
+		}
+	}
+
+	targetWS := nd.BaseWS + "/api/v1/browser/webrtc/signal?" + upQuery.Encode()
+	gw.log.Infof("Routing WebRTC Live View (user=%q) -> node [%s] (%s)", userID, nd.ID, nd.Source)
+	w.Header().Set("X-Browser-Node", nd.ID)
+	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nd.dialFn, nil)
+}
+
 func parsePoolPathParams(pathname string) map[string]string {
 	parts := strings.FieldsFunc(pathname, func(r rune) bool { return r == '/' })
 	out := make(map[string]string)
@@ -876,10 +1102,11 @@ func (gw *Gateway) handleRootOrCDPProxy(w http.ResponseWriter, r *http.Request) 
 	if !wsutil.IsWebSocketUpgrade(r) {
 		if r.URL.Path == "/" {
 			writePoolJSON(w, http.StatusOK, map[string]any{
-				"service": "browser-go",
-				"mode":    "pool",
-				"version": browsergo.AppVersion,
-				"nodes":   "/api/v1/pool/nodes",
+				"service":   "browser-go",
+				"mode":      "pool",
+				"version":   browsergo.AppVersion,
+				"dashboard": "/dashboard",
+				"nodes":     "/api/v1/pool/nodes",
 			})
 			return
 		}
@@ -909,7 +1136,7 @@ func (gw *Gateway) handleRootOrCDPProxy(w http.ResponseWriter, r *http.Request) 
 	reqTags := config.ParseTagsCSV(r.URL.Query().Get("tags"))
 	explicitNode := strings.TrimSpace(r.URL.Query().Get("node"))
 
-	nd, release, err := gw.selectNode(r.Context(), strings.TrimSpace(lp.User), reqTags, explicitNode)
+	nd, markHandshook, release, err := gw.selectNode(r.Context(), strings.TrimSpace(lp.User), reqTags, explicitNode)
 	if err != nil {
 		if errors.Is(err, chrome.ErrMaxInstancesReached) {
 			http.Error(w, "All browser pool slots are currently busy", http.StatusServiceUnavailable)
@@ -934,7 +1161,11 @@ func (gw *Gateway) handleRootOrCDPProxy(w http.ResponseWriter, r *http.Request) 
 
 	gw.log.Infof("Routing CDP session (user=%q, tags=%v) -> node [%s] (%s)", lp.User, reqTags, nd.ID, nd.Source)
 	w.Header().Set("X-Browser-Node", nd.ID)
-	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nd.dialFn, nil)
+	var activityOnce sync.Once
+	onFirstActivity := func() {
+		activityOnce.Do(markHandshook)
+	}
+	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nd.dialFn, onFirstActivity)
 }
 
 func writePoolJSON(w http.ResponseWriter, status int, payload any) {

@@ -592,6 +592,9 @@ func ProxyRawWebSocket(
 	if err := cliRW.Flush(); err != nil {
 		return err
 	}
+	if onActivity != nil {
+		onActivity()
+	}
 
 	// Drain any buffered bytes in cliRW.Reader and upBR before streaming
 	cliSrc := io.Reader(cliConn)

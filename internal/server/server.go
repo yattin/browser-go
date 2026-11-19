@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +16,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	pionwebrtc "github.com/pion/webrtc/v4"
 	"go.yaml.in/yaml/v3"
 
 	browsergo "browser-go"
 	"browser-go/internal/cdpbridge"
 	"browser-go/internal/chrome"
 	"browser-go/internal/config"
+	"browser-go/internal/liveview"
 	"browser-go/internal/logger"
+	bgwebrtc "browser-go/internal/webrtc"
 	"browser-go/internal/wsutil"
 )
 
@@ -174,6 +178,9 @@ func (s *NodeServer) Shutdown(ctx context.Context) error {
 
 func (s *NodeServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/dashboard", s.handleNodeDashboard)
+	mux.HandleFunc("/dashboard/", s.handleNodeDashboard)
+	mux.HandleFunc("/liveview.js", liveview.ServeJS)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPIJSON)
 	mux.HandleFunc("/api-docs", s.handleAPIDocs)
 	mux.HandleFunc("/api-docs/", s.handleAPIDocs)
@@ -185,6 +192,9 @@ func (s *NodeServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/browser/stop", s.handleBrowserStop)
 	mux.HandleFunc("/api/v1/browser/list", s.handleBrowserList)
 	mux.HandleFunc("/api/v1/browser/stats", s.handleBrowserStats)
+	mux.HandleFunc("/api/v1/browser/targets", s.handleBrowserTargets)
+	mux.HandleFunc("/api/v1/browser/attach", s.handleBrowserAttach)
+	mux.HandleFunc("/api/v1/browser/webrtc/signal", s.handleWebRTCSignal)
 	mux.HandleFunc("/api/v1/devices", s.handleDevicesList)
 	mux.HandleFunc("/api/v1/devices/", s.handleDeviceByID)
 	mux.HandleFunc("/api/v1/device/stats", s.handleDeviceStats)
@@ -397,6 +407,89 @@ func (s *NodeServer) handleBrowserStats(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (s *NodeServer) handleBrowserTargets(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeManagement(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+		return
+	}
+	targets, err := s.chromeMgr.ListTargets(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"msg":  "success",
+		"data": targets,
+	})
+}
+
+func (s *NodeServer) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeManagement(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		http.Error(w, "Missing user_id parameter", http.StatusBadRequest)
+		return
+	}
+	inst, release, err := s.chromeMgr.AttachExisting(userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer release()
+
+	targetWS := inst.WSURL
+	if tid := strings.TrimSpace(r.URL.Query().Get("target_id")); tid != "" {
+		if targets, tErr := s.chromeMgr.ListTargets(r.Context(), userID); tErr == nil {
+			for _, t := range targets {
+				if t.ID == tid && t.WebSocketDebuggerURL != "" {
+					targetWS = t.WebSocketDebuggerURL
+					break
+				}
+			}
+		}
+	}
+
+	s.ActiveWSConns.Add(1)
+	defer s.ActiveWSConns.Add(-1)
+	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nil, inst.Touch)
+}
+
+func (s *NodeServer) handleWebRTCSignal(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeManagement(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		http.Error(w, "Missing user_id parameter", http.StatusBadRequest)
+		return
+	}
+	targetID := strings.TrimSpace(r.URL.Query().Get("target_id"))
+
+	var extraICE []pionwebrtc.ICEServer
+	if rawB64 := strings.TrimSpace(r.URL.Query().Get("ice_b64")); rawB64 != "" {
+		if decoded, err := base64.RawURLEncoding.DecodeString(rawB64); err == nil {
+			_ = json.Unmarshal(decoded, &extraICE)
+		}
+	}
+
+	ws, err := wsutil.UpgradeHTTP(w, r)
+	if err != nil {
+		return
+	}
+	defer ws.Close(1000, "")
+
+	s.ActiveWSConns.Add(1)
+	defer s.ActiveWSConns.Add(-1)
+	bgwebrtc.ServeTakeoverSession(r.Context(), ws, s.chromeMgr, userID, targetID, s.cfg.WebRTC, extraICE, s.log)
+}
+
 func (s *NodeServer) handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeManagement(w, r) {
 		return
@@ -467,11 +560,12 @@ func (s *NodeServer) handleRootOrWebSocket(w http.ResponseWriter, r *http.Reques
 	if !wsutil.IsWebSocketUpgrade(r) {
 		if r.URL.Path == "/" {
 			writeJSON(w, http.StatusOK, map[string]any{
-				"service": "browser-go",
-				"mode":    "node",
-				"node_id": s.cfg.NodeID,
-				"version": browsergo.AppVersion,
-				"docs":    "/api-docs",
+				"service":   "browser-go",
+				"mode":      "node",
+				"node_id":   s.cfg.NodeID,
+				"version":   browsergo.AppVersion,
+				"dashboard": "/dashboard",
+				"docs":      "/api-docs",
 			})
 			return
 		}

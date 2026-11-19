@@ -31,6 +31,7 @@ $LdFlags = "-s -w"
 if ($Version) {
     $LdFlags = "$LdFlags -X browser-go.AppVersion=$Version"
 }
+$GuiLdFlags = "$LdFlags -H=windowsgui"
 
 $BinDir = Join-Path $ProjectRoot "bin"
 if ($Clean -and (Test-Path $BinDir)) {
@@ -38,15 +39,18 @@ if ($Clean -and (Test-Path $BinDir)) {
 }
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
-Write-Host "[1/2] Building Browser-Go CLI + Tunnel + Pool Gateway (bin\browser-go.exe)..." -ForegroundColor Cyan
+Write-Host "[1/3] Building Browser-Go CLI + Tunnel + Pool Gateway (bin\browser-go.exe)..." -ForegroundColor Cyan
 go build -trimpath -ldflags $LdFlags -o (Join-Path $BinDir "browser-go.exe") ./cmd/browser-go
 if ($LASTEXITCODE -ne 0) { throw "Failed building browser-go.exe" }
 
-$ExeInfo = Get-Item (Join-Path $BinDir "browser-go.exe")
-Write-Host ("Built bin\browser-go.exe ({0:N2} MB)" -f ($ExeInfo.Length / 1MB)) -ForegroundColor Green
+Write-Host "[2/3] Building Browser-Go Silent Windows GUI/Service Binary (bin\browser-go-noconsole.exe)..." -ForegroundColor Cyan
+go build -trimpath -ldflags $GuiLdFlags -o (Join-Path $BinDir "browser-go-noconsole.exe") ./cmd/browser-go
+if ($LASTEXITCODE -ne 0) { throw "Failed building browser-go-noconsole.exe" }
+
+Get-ChildItem $BinDir -Filter *.exe | Select-Object Name, @{Name="SizeMB";Expression={[math]::Round($_.Length / 1MB, 2)}} | Format-Table -AutoSize
 
 if ($SelfTest) {
-    Write-Host "[2/2] Running Go Unit & Integration Test Suite..." -ForegroundColor Yellow
+    Write-Host "[3/3] Running Go Unit & Integration Test Suite..." -ForegroundColor Yellow
     go test -v -count=1 ./...
     if ($LASTEXITCODE -ne 0) {
         throw "Test suite failed with exit code $LASTEXITCODE"

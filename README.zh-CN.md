@@ -89,8 +89,26 @@ browser-go node --port=0 --token=my-secret \
 
 ---
 
-## RESTful 与管理 API
+## RESTful 管理 API、可视化控制台与系统服务
 
+### 可视化 Web 控制台 (`/dashboard`)
+- **池网关控制台 (`http://<pool>:3000/dashboard`)**：实时查看健康穿透节点矩阵、RTT 延迟、槽位进度条、全池活跃浏览器实例一键强杀、以及交互式 Playwright 连接代码生成器。
+- **单机节点控制台 (`http://<node>:3000/dashboard`)**：管理本机 Chrome 实例池与 Chrome 扩展桥接设备。
+
+### 原生 Windows SCM 系统服务与后台守护 (`--daemon`)
+```powershell
+# 非提权只读检查系统服务状态（支持结构化 JSON）
+.\bin\browser-go.exe status --json
+
+# 终端无阻塞后台拉起（自动写入 PID 文件）
+.\bin\browser-go.exe node --port=0 --pf-bridge=pool.example.com:33080 --pf-key=node-01 --daemon
+
+# 注册为开机自启 Windows 系统服务（管理员权限运行，自动将相对证书/数据路径转为绝对路径并启用崩溃自愈）
+.\bin\browser-go.exe install -n BrowserGoNode node --port=0 --pf-bridge=pool.example.com:33080 --pf-key=node-01 --pf-cert=cli.crt --pf-key-file=cli.key --pf-ca=ca.crt
+.\bin\browser-go.exe start -n BrowserGoNode
+```
+
+### RESTful API
 - `GET /api/v1/browser/stats` — 当前节点或全池容量与可用槽位（`available_slots`）
 - `GET /api/v1/browser/list` — 列出活跃浏览器实例（`pool` 模式下聚合所有节点并标注 `node_id`）
 - `GET /api/v1/browser/stop?user_id=<id>` — 停止指定用户的浏览器实例（`pool` 模式自动路由至持有该会话的节点）

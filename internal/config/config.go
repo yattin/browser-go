@@ -47,6 +47,20 @@ type TunnelConfig struct {
 	HubCA     string // --pf-hub-ca
 }
 
+// WebRTCConfig configures WebRTC Live View media encoding, ICE servers, and built-in TURN relay.
+type WebRTCConfig struct {
+	STUNServers []string // --webrtc-stun (comma-separated)
+	TURNServers []string // --webrtc-turn (comma-separated turn:user:pass@host:port)
+	FPS         int      // --webrtc-fps (default 30)
+	Encoder     string   // --webrtc-encoder ("auto", "nvenc", "qsv", "amf", "mf", "x264", "dc")
+	FFmpegPath  string   // --ffmpeg-path
+
+	// Built-in pion/turn/v4 server options (used by `browser-go pool`)
+	TURNListen   string // --webrtc-turn-listen (e.g. ":3478")
+	TURNPublicIP string // --webrtc-public-ip
+	TURNSecret   string // --webrtc-turn-secret
+}
+
 // NodeConfig configures a Browser-Go worker node (`browser-go` or `browser-go node`).
 type NodeConfig struct {
 	Host                  string
@@ -65,7 +79,10 @@ type NodeConfig struct {
 	Tags                  map[string]string
 	NoLogFile             bool
 	Debug                 bool
+	Daemon                bool
+	ServiceName           string
 	Tunnel                TunnelConfig
+	WebRTC                WebRTCConfig
 }
 
 // PoolConfig configures a Browser-Go central CDP Pool Gateway (`browser-go pool`).
@@ -80,6 +97,9 @@ type PoolConfig struct {
 	DataDir      string
 	NoLogFile    bool
 	Debug        bool
+	Daemon       bool
+	ServiceName  string
+	WebRTC       WebRTCConfig
 
 	// Built-in ProxyForge-compatible Bridge listener for zero-port-mapping auto node registration
 	PFListen     string // --pf-listen (e.g. ":33080")
@@ -104,12 +124,22 @@ type KeygenConfig struct {
 	JSONOut   bool
 }
 
+// ServiceConfig configures Windows SCM service management (`install`, `uninstall`, `start`, `stop`, `status`).
+type ServiceConfig struct {
+	Action      string   // "install", "uninstall", "start", "stop", "status"
+	Name        string   // default "BrowserGo"
+	DisplayName string   // default "Browser-Go CDP Service"
+	ServiceArgs []string // normalized arguments passed to CreateService on install
+	JSONOut     bool
+}
+
 // Command represents the parsed top-level CLI invocation.
 type Command struct {
-	Subcommand string // "node", "pool", "keygen", "version", "help"
+	Subcommand string // "node", "pool", "keygen", "service", "version", "help"
 	Node       NodeConfig
 	Pool       PoolConfig
 	Keygen     KeygenConfig
+	Service    ServiceConfig
 }
 
 // DefaultDataDir returns ~/.browser-go.
@@ -154,6 +184,11 @@ func ParseCLI(args []string) (Command, error) {
 				KCPDataShard:   10,
 				KCPParityShard: 3,
 			},
+			WebRTC: WebRTCConfig{
+				STUNServers: []string{"stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"},
+				FPS:         30,
+				Encoder:     "auto",
+			},
 		},
 		Pool: PoolConfig{
 			Host:         "0.0.0.0",
@@ -163,12 +198,21 @@ func ParseCLI(args []string) (Command, error) {
 			ProbeEvery:   3 * time.Second,
 			DataDir:      DefaultDataDir(),
 			PFProto:      "tls",
+			WebRTC: WebRTCConfig{
+				STUNServers: []string{"stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"},
+				FPS:         30,
+				Encoder:     "auto",
+			},
 		},
 		Keygen: KeygenConfig{
 			Mode:      "ca",
 			Domain:    "browser-go.local",
 			ValidDays: 3650,
 			OutPrefix: "ca",
+		},
+		Service: ServiceConfig{
+			Name:        "BrowserGo",
+			DisplayName: "Browser-Go CDP Service",
 		},
 	}
 
@@ -178,8 +222,19 @@ func ParseCLI(args []string) (Command, error) {
 		case "node", "pool", "keygen", "version", "help":
 			cmd.Subcommand = sub
 			args = args[1:]
+		case "service":
+			cmd.Subcommand = "service"
+			args = args[1:]
+			if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+				cmd.Service.Action = strings.ToLower(strings.TrimSpace(args[0]))
+				args = args[1:]
+			}
+		case "install", "uninstall", "start", "stop", "status":
+			cmd.Subcommand = "service"
+			cmd.Service.Action = sub
+			args = args[1:]
 		default:
-			return cmd, fmt.Errorf("unknown subcommand %q (expected node, pool, keygen, version, or help)", args[0])
+			return cmd, fmt.Errorf("unknown subcommand %q (expected node, pool, keygen, service, install, uninstall, status, version, or help)", args[0])
 		}
 	}
 
@@ -187,15 +242,21 @@ func ParseCLI(args []string) (Command, error) {
 	case "version", "help":
 		return cmd, nil
 	case "node":
+		cmd.Node.ServiceName = "BrowserGo"
 		if err := parseNodeFlags(&cmd, args); err != nil {
 			return cmd, err
 		}
 	case "pool":
+		cmd.Pool.ServiceName = "BrowserGoPool"
 		if err := parsePoolFlags(&cmd, args); err != nil {
 			return cmd, err
 		}
 	case "keygen":
 		if err := parseKeygenFlags(&cmd, args); err != nil {
+			return cmd, err
+		}
+	case "service":
+		if err := parseServiceFlags(&cmd, args); err != nil {
 			return cmd, err
 		}
 	}
@@ -231,6 +292,17 @@ func parseBoolVal(hasVal bool, val string) bool {
 	default:
 		return true
 	}
+}
+
+func splitCSV(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func ParseTagsCSV(raw string) map[string]string {
@@ -367,6 +439,14 @@ func parseNodeFlags(cmd *Command, args []string) error {
 			n.NoLogFile = parseBoolVal(hasVal, val)
 		case "debug":
 			n.Debug = parseBoolVal(hasVal, val)
+		case "daemon", "d":
+			n.Daemon = parseBoolVal(hasVal, val)
+		case "service-name":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.ServiceName = v
 
 		// ProxyForge Tunnel flags
 		case "pf-bridge", "P":
@@ -528,6 +608,38 @@ func parseNodeFlags(cmd *Command, args []string) error {
 				return err
 			}
 			n.Tunnel.HubCA = v
+		case "webrtc-stun":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.WebRTC.STUNServers = splitCSV(v)
+		case "webrtc-turn":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.WebRTC.TURNServers = append(n.WebRTC.TURNServers, splitCSV(v)...)
+		case "webrtc-fps":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			if fps, err := strconv.Atoi(v); err == nil && fps >= 5 && fps <= 60 {
+				n.WebRTC.FPS = fps
+			}
+		case "webrtc-encoder":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.WebRTC.Encoder = strings.ToLower(strings.TrimSpace(v))
+		case "ffmpeg-path":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.WebRTC.FFmpegPath = v
 		default:
 			return fmt.Errorf("unknown node flag %q", arg)
 		}
@@ -614,6 +726,14 @@ func parsePoolFlags(cmd *Command, args []string) error {
 			p.NoLogFile = parseBoolVal(hasVal, val)
 		case "debug":
 			p.Debug = parseBoolVal(hasVal, val)
+		case "daemon", "d":
+			p.Daemon = parseBoolVal(hasVal, val)
+		case "service-name":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.ServiceName = v
 		case "pf-listen":
 			v, err := nextVal(args, &i, val, hasVal)
 			if err != nil {
@@ -656,6 +776,36 @@ func parsePoolFlags(cmd *Command, args []string) error {
 			p.PFCompress = parseBoolVal(hasVal, val)
 		case "pf-p2p", "p2p":
 			p.PFEnableP2P = parseBoolVal(hasVal, val)
+		case "webrtc-stun":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.WebRTC.STUNServers = splitCSV(v)
+		case "webrtc-turn":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.WebRTC.TURNServers = append(p.WebRTC.TURNServers, splitCSV(v)...)
+		case "webrtc-turn-listen":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.WebRTC.TURNListen = v
+		case "webrtc-public-ip":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.WebRTC.TURNPublicIP = v
+		case "webrtc-turn-secret":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			p.WebRTC.TURNSecret = v
 		default:
 			return fmt.Errorf("unknown pool flag %q", arg)
 		}
@@ -733,6 +883,119 @@ func parseKeygenFlags(cmd *Command, args []string) error {
 		default:
 			return fmt.Errorf("unknown keygen flag %q", arg)
 		}
+	}
+	return nil
+}
+
+var pathBearingFlags = map[string]bool{
+	"data-dir":    true,
+	"chrome-path": true,
+	"pf-cert":     true,
+	"C":           true,
+	"pf-key-file": true,
+	"K":           true,
+	"pf-ca":       true,
+	"ca-bundle":   true,
+	"pf-hub-ca":   true,
+}
+
+func resolveServicePathValue(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" || s == "default" || strings.Contains(s, "://") {
+		return s
+	}
+	if abs, err := filepath.Abs(s); err == nil {
+		return abs
+	}
+	return s
+}
+
+// NormalizeServiceArgs resolves relative file/directory flags to absolute paths so Windows SCM (cwd=System32) finds certs and data dirs.
+func NormalizeServiceArgs(rawArgs []string) []string {
+	out := make([]string, 0, len(rawArgs))
+	for i := 0; i < len(rawArgs); i++ {
+		arg := rawArgs[i]
+		if !strings.HasPrefix(arg, "-") {
+			out = append(out, arg)
+			continue
+		}
+		name, val, hasVal := splitFlag(arg)
+		if name == "daemon" || name == "d" {
+			continue
+		}
+		if pathBearingFlags[name] {
+			if hasVal {
+				prefix := "--"
+				if !strings.HasPrefix(arg, "--") {
+					prefix = "-"
+				}
+				out = append(out, prefix+name+"="+resolveServicePathValue(val))
+				continue
+			}
+			if i+1 < len(rawArgs) {
+				out = append(out, arg, resolveServicePathValue(rawArgs[i+1]))
+				i++
+				continue
+			}
+		}
+		out = append(out, arg)
+	}
+	if len(out) == 0 || strings.HasPrefix(out[0], "-") {
+		out = append([]string{"node"}, out...)
+	}
+	return out
+}
+
+func parseServiceFlags(cmd *Command, args []string) error {
+	sc := &cmd.Service
+	if sc.Action == "" {
+		return errors.New("service command requires an action: install, uninstall, start, stop, or status")
+	}
+
+	var passthrough []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-h" || arg == "--help" {
+			cmd.Subcommand = "help"
+			return nil
+		}
+		if strings.HasPrefix(arg, "-") {
+			name, val, hasVal := splitFlag(arg)
+			switch name {
+			case "n", "name", "service-name":
+				v, err := nextVal(args, &i, val, hasVal)
+				if err != nil {
+					return err
+				}
+				sc.Name = v
+				continue
+			case "display-name":
+				v, err := nextVal(args, &i, val, hasVal)
+				if err != nil {
+					return err
+				}
+				sc.DisplayName = v
+				continue
+			case "json":
+				sc.JSONOut = parseBoolVal(hasVal, val)
+				continue
+			}
+		}
+		passthrough = append(passthrough, arg)
+	}
+
+	if sc.Action == "install" {
+		norm := NormalizeServiceArgs(passthrough)
+		norm = append(norm, "--service-name="+sc.Name)
+		// Validate target node/pool flags upfront before touching Windows SCM
+		validated, err := ParseCLI(norm)
+		if err != nil {
+			return fmt.Errorf("invalid service runtime arguments: %w", err)
+		}
+		if validated.Subcommand == "pool" && sc.DisplayName == "Browser-Go CDP Service" {
+			sc.DisplayName = "Browser-Go CDP Pool Gateway"
+		}
+		sc.ServiceArgs = norm
 	}
 	return nil
 }
