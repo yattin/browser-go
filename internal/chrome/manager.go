@@ -51,6 +51,8 @@ type InstanceSnapshot struct {
 	ActiveConns     int32  `json:"active_conns,omitempty"`
 	Ephemeral       bool   `json:"ephemeral,omitempty"`
 	DebugPort       int    `json:"debug_port,omitempty"`
+	CurrentURL      string `json:"current_url,omitempty"`
+	CurrentTitle    string `json:"current_title,omitempty"`
 }
 
 // StatsSnapshot matches OpenAPI `SystemStatsData`.
@@ -593,6 +595,73 @@ func (m *Manager) ListTargets(ctx context.Context, userKey string) ([]TargetSnap
 	return pages, nil
 }
 
+// ActivateTarget brings a specific Chrome page tab to the foreground via DevTools HTTP API.
+func (m *Manager) ActivateTarget(ctx context.Context, userKey, targetID string) error {
+	inst, release, err := m.AttachExisting(userKey)
+	if err != nil {
+		return err
+	}
+	defer release()
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/activate/%s", inst.DebugPort, targetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// CreateTarget opens a new page tab in a running Chrome instance via DevTools HTTP API.
+func (m *Manager) CreateTarget(ctx context.Context, userKey, targetURL string) (*TargetSnapshot, error) {
+	inst, release, err := m.AttachExisting(userKey)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if targetURL == "" {
+		targetURL = "about:blank"
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", inst.DebugPort, targetURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var t TargetSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// CloseTarget closes a specific page tab in a running Chrome instance via DevTools HTTP API.
+func (m *Manager) CloseTarget(ctx context.Context, userKey, targetID string) error {
+	inst, release, err := m.AttachExisting(userKey)
+	if err != nil {
+		return err
+	}
+	defer release()
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/close/%s", inst.DebugPort, targetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // ListInstances returns snapshots of all active Chrome instances.
 func (m *Manager) ListInstances() []InstanceSnapshot {
 	now := time.Now()
@@ -614,6 +683,32 @@ func (m *Manager) ListInstances() []InstanceSnapshot {
 		})
 	}
 	m.mu.Unlock()
+
+	// Enrich each live instance with its current active page URL & title (fast local loopback probe)
+	for i := range out {
+		if out[i].DebugPort <= 0 {
+			continue
+		}
+		pCtx, pCancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+		endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/list", out[i].DebugPort)
+		req, err := http.NewRequestWithContext(pCtx, http.MethodGet, endpoint, nil)
+		if err == nil {
+			if resp, rErr := m.httpClient.Do(req); rErr == nil {
+				var all []TargetSnapshot
+				if json.NewDecoder(resp.Body).Decode(&all) == nil {
+					for _, t := range all {
+						if t.Type == "page" {
+							out[i].CurrentURL = t.URL
+							out[i].CurrentTitle = t.Title
+							break
+						}
+					}
+				}
+				_ = resp.Body.Close()
+			}
+		}
+		pCancel()
+	}
 
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UserID < out[j].UserID

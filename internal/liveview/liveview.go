@@ -15,38 +15,98 @@ const liveViewScript = `(function() {
 
   const style = document.createElement('style');
   style.textContent = [
-    '#lv-backdrop { position: fixed; inset: 0; background: rgba(5, 10, 22, 0.92); backdrop-filter: blur(6px); z-index: 9999; display: none; flex-direction: column; font-family: system-ui, -apple-system, sans-serif; color: #f1f5f9; }',
+    '#lv-backdrop { position: fixed; inset: 0; background: #202124; z-index: 9999; display: none; flex-direction: column; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: #e8eaed; }',
     '#lv-backdrop.open { display: flex; }',
-    '#lv-bar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #131c31; border-bottom: 1px solid #24324d; flex-wrap: wrap; }',
-    '#lv-bar button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; font-weight: 600; }',
-    '#lv-bar button:hover { background: #334155; }',
-    '#lv-bar button.primary { background: #0284c7; border-color: #0284c7; color: #fff; }',
-    '#lv-bar button.close-btn { background: rgba(239,68,68,0.22); border-color: rgba(239,68,68,0.5); color: #fecaca; margin-left: auto; }',
-    '#lv-bar button.close-btn:hover { background: #ef4444; color: #fff; }',
-    '#lv-url { flex: 1; min-width: 220px; background: #090e1a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; font-size: 13px; }',
-    '#lv-tabs { max-width: 220px; background: #090e1a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; }',
-    '#lv-status { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; background: rgba(16, 185, 129, 0.16); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); white-space: nowrap; }',
-    '#lv-stage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #050811; cursor: default; user-select: none; }',
+    '/* Row 1: Authentic Chrome Dark Tab Strip */',
+    '#lv-tabstrip { display: flex; align-items: flex-end; height: 40px; padding: 6px 10px 0 10px; background: #202124; gap: 2px; user-select: none; }',
+    '#lv-tabs-wrap { display: flex; align-items: flex-end; flex: 1; min-width: 0; }',
+    '#lv-tabs { display: flex; align-items: flex-end; gap: 2px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }',
+    '#lv-tabs::-webkit-scrollbar { display: none; }',
+    '.lv-tab { position: relative; display: flex; align-items: center; gap: 8px; height: 34px; min-width: 96px; max-width: 230px; flex: 0 1 210px; padding: 0 10px 0 12px; border-radius: 10px 10px 0 0; background: transparent; color: #9aa0a6; font-size: 12px; cursor: pointer; transition: background 0.12s, color 0.12s; }',
+    '.lv-tab:not(.active)::after { content: ""; position: absolute; right: 0; top: 8px; bottom: 8px; width: 1px; background: #3c4043; }',
+    '.lv-tab:not(.active):hover { background: #2b2d30; color: #e8eaed; }',
+    '.lv-tab:not(.active):hover::after { opacity: 0; }',
+    '.lv-tab.active { background: #35363a; color: #e8eaed; font-weight: 500; z-index: 2; }',
+    '.lv-tab.active::before, .lv-tab.active::after { content: ""; position: absolute; bottom: 0; width: 10px; height: 10px; pointer-events: none; }',
+    '.lv-tab.active::before { left: -10px; background: radial-gradient(circle at 0 0, transparent 10px, #35363a 10.5px); }',
+    '.lv-tab.active::after { right: -10px; background: radial-gradient(circle at 10px 0, transparent 10px, #35363a 10.5px); }',
+    '.lv-tab-icon { width: 14px; height: 14px; flex: 0 0 14px; display: flex; align-items: center; justify-content: center; color: #8ab4f8; }',
+    '.lv-tab-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    '.lv-tab-close { width: 18px; height: 18px; flex: 0 0 18px; border-radius: 50%; border: none; background: transparent; color: #9aa0a6; font-size: 13px; line-height: 18px; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }',
+    '.lv-tab-close:hover { background: rgba(232,234,237,0.16); color: #fff; }',
+    '#lv-newtab { width: 28px; height: 28px; margin: 0 6px 3px 4px; flex: 0 0 28px; border-radius: 50%; border: none; background: transparent; color: #bdc1c6; font-size: 18px; line-height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; }',
+    '#lv-newtab:hover { background: rgba(232,234,237,0.12); color: #fff; }',
+    '#lv-win-right { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }',
+    '#lv-status { display: inline-flex; align-items: center; gap: 5px; height: 22px; font-size: 11px; font-weight: 500; padding: 0 8px; border-radius: 999px; background: rgba(129, 201, 149, 0.12); color: #81c995; border: 1px solid rgba(129, 201, 149, 0.22); white-space: nowrap; cursor: default; letter-spacing: 0.2px; }',
+    '#lv-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }',
+    '#lv-close { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: none; background: transparent; color: #9aa0a6; font-size: 14px; line-height: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.12s, color 0.12s; }',
+    '#lv-close:hover { background: #e81123; color: #fff; }',
+    '/* Row 2: Authentic Chrome Omnibox Toolbar */',
+    '#lv-navbar { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px; background: #35363a; border-bottom: 1px solid #202124; }',
+    '.lv-nav-btn { width: 30px; height: 30px; border-radius: 50%; border: none; background: transparent; color: #e8eaed; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0; transition: background 0.12s; }',
+    '.lv-nav-btn:hover { background: rgba(232,234,237,0.12); }',
+    '.lv-nav-btn:active { background: rgba(232,234,237,0.2); }',
+    '.lv-nav-btn svg { width: 16px; height: 16px; fill: currentColor; }',
+    '#lv-omnibox { flex: 1; min-width: 180px; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 999px; background: #202124; border: 1.5px solid transparent; transition: border-color 0.12s, background 0.12s; }',
+    '#lv-omnibox:hover { background: #282a2e; }',
+    '#lv-omnibox:focus-within { background: #202124; border-color: #8ab4f8; }',
+    '#lv-sec-icon { width: 14px; height: 14px; flex: 0 0 14px; color: #9aa0a6; display: flex; align-items: center; justify-content: center; }',
+    '#lv-sec-icon.https { color: #81c995; }',
+    '#lv-url { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: #e8eaed; font-size: 13px; font-family: inherit; }',
+    '#lv-url::placeholder { color: #9aa0a6; }',
+    '.lv-sep { width: 1px; height: 16px; background: rgba(255,255,255,0.12); margin: 0 2px; flex-shrink: 0; }',
+    '#lv-res-wrap { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }',
+    '#lv-res-wrap::after { content: ""; position: absolute; right: 9px; width: 10px; height: 10px; pointer-events: none; background: no-repeat center/10px 10px url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'%239aa0a6\'%3E%3Cpath d=\'M7 10l5 5 5-5z\'/%3E%3C/svg%3E"); }',
+    '#lv-res { appearance: none; -webkit-appearance: none; height: 28px; padding: 0 24px 0 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.08); background: rgba(232,234,237,0.07); color: #e8eaed; font-size: 12px; font-weight: 500; outline: none; cursor: pointer; transition: background 0.12s, border-color 0.12s; }',
+    '#lv-res:hover { background: rgba(232,234,237,0.14); border-color: rgba(255,255,255,0.16); }',
+    '#lv-res option { background: #292a2d; color: #e8eaed; }',
+    '.lv-tool-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: #e8eaed; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background 0.12s, color 0.12s; }',
+    '.lv-tool-btn:hover { background: rgba(232,234,237,0.12); }',
+    '.lv-tool-btn:active { background: rgba(232,234,237,0.2); }',
+    '.lv-tool-btn svg { width: 14px; height: 14px; fill: currentColor; opacity: 0.85; }',
+    '.lv-tool-btn.accent svg { color: #8ab4f8; opacity: 1; }',
+    '#lv-stage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #121316; cursor: default; user-select: none; }',
     '#lv-video, #lv-canvas { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; outline: none; display: none; }',
     '#lv-video.active, #lv-canvas.active { display: block; }',
-    '#lv-ime { position: fixed; left: 20px; top: 60px; width: 2px; height: 20px; opacity: 0; pointer-events: none; resize: none; border: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent; z-index: 10001; }',
-    '#lv-toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(15, 23, 42, 0.95); border: 1px solid #38bdf8; color: #e0f2fe; padding: 8px 16px; border-radius: 8px; font-size: 13px; display: none; z-index: 10002; }'
+    '#lv-ime { position: fixed; left: 20px; top: 88px; width: 2px; height: 20px; opacity: 0; pointer-events: none; resize: none; border: none; padding: 0; margin: 0; background: transparent; color: transparent; caret-color: transparent; z-index: 10001; }',
+    '#lv-toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(32, 33, 36, 0.96); border: 1px solid #8ab4f8; color: #e8eaed; padding: 8px 16px; border-radius: 999px; font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); display: none; z-index: 10002; }'
   ].join('\n');
   document.head.appendChild(style);
 
   const root = document.createElement('div');
   root.id = 'lv-backdrop';
   root.innerHTML = [
-    '<div id="lv-bar">',
-    '  <button id="lv-back" title="后退">←</button>',
-    '  <button id="lv-fwd" title="前进">→</button>',
-    '  <button id="lv-reload" title="刷新">↻</button>',
-    '  <select id="lv-tabs" title="切换标签页"></select>',
-    '  <input id="lv-url" type="text" placeholder="输入网址按 Enter 跳转..." />',
-    '  <span id="lv-status">连接中...</span>',
-    '  <button id="lv-paste-btn" class="primary" title="将文本直接注入远端当前焦点输入框">发送文本</button>',
-    '  <button id="lv-devtools-btn" title="复制 Chrome 原生 DevTools 调试链接">DevTools</button>',
-    '  <button id="lv-close" class="close-btn">退出接管</button>',
+    '<div id="lv-tabstrip">',
+    '  <div id="lv-tabs-wrap">',
+    '    <div id="lv-tabs" role="tablist"></div>',
+    '    <button id="lv-newtab" title="新建标签页 (Ctrl+T)">+</button>',
+    '  </div>',
+    '  <div id="lv-win-right">',
+    '    <span id="lv-status" title="连接状态">连接中</span>',
+    '    <button id="lv-close" title="退出接管">✕</button>',
+    '  </div>',
+    '</div>',
+    '<div id="lv-navbar">',
+    '  <button id="lv-back" class="lv-nav-btn" title="后退"><svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>',
+    '  <button id="lv-fwd" class="lv-nav-btn" title="前进"><svg viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></button>',
+    '  <button id="lv-reload" class="lv-nav-btn" title="重新加载"><svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>',
+    '  <div id="lv-omnibox">',
+    '    <span id="lv-sec-icon" title="页面连接状态"></span>',
+    '    <input id="lv-url" type="text" spellcheck="false" autocomplete="off" placeholder="在远端 Chrome 中搜索或输入网址，按 Enter 跳转..." />',
+    '  </div>',
+    '  <div id="lv-res-wrap">',
+    '    <select id="lv-res" title="切换远端浏览器视口分辨率">',
+    '      <option value="auto">自适应</option>',
+    '      <option value="1920x1080">1920×1080</option>',
+    '      <option value="1440x900">1440×900</option>',
+    '      <option value="1280x800">1280×800</option>',
+    '      <option value="1280x720">1280×720</option>',
+    '      <option value="390x844m">390×844 手机</option>',
+    '    </select>',
+    '  </div>',
+    '  <span class="lv-sep"></span>',
+    '  <button id="lv-paste-btn" class="lv-tool-btn accent" title="将文本直接注入远端当前焦点输入框"><svg viewBox="0 0 24 24"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>文本</button>',
+    '  <button id="lv-devtools-btn" class="lv-tool-btn" title="复制 Chrome 原生 DevTools 调试链接"><svg viewBox="0 0 24 24"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>DevTools</button>',
     '</div>',
     '<div id="lv-stage">',
     '  <video id="lv-video" autoplay playsinline muted></video>',
@@ -63,9 +123,50 @@ const liveViewScript = `(function() {
   const stageEl = document.getElementById('lv-stage');
   const imeEl = document.getElementById('lv-ime');
   const urlEl = document.getElementById('lv-url');
+  const resEl = document.getElementById('lv-res');
+  const secIconEl = document.getElementById('lv-sec-icon');
+  resEl.value = localStorage.getItem('bg_lv_res') || 'auto';
+
+  function applySelectedResolution(showFeedback = false) {
+    const val = resEl.value || 'auto';
+    let w = 1280, h = 800, mobile = false;
+    if (val === 'auto') {
+      w = Math.max(800, Math.min(1920, Math.floor((stageEl.clientWidth || 1280) / 2) * 2));
+      h = Math.max(540, Math.min(1080, Math.floor((stageEl.clientHeight || 800) / 2) * 2));
+    } else {
+      mobile = val.endsWith('m');
+      const parts = val.replace('m', '').split('x');
+      w = parseInt(parts[0], 10) || 1280;
+      h = parseInt(parts[1], 10) || 800;
+    }
+    deviceW = w;
+    deviceH = h;
+    sendReliable({ type: 'resize', width: w, height: h, mobile });
+    if (showFeedback) {
+      showToast('分辨率已切换为 ' + w + '×' + h + (mobile ? ' (手机)' : ''));
+    }
+  }
   const tabsEl = document.getElementById('lv-tabs');
   const statusEl = document.getElementById('lv-status');
   const toastEl = document.getElementById('lv-toast');
+
+  const SVG_LOCK = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>';
+  const SVG_GLOBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+
+  function updateOmniboxURL(rawUrl) {
+    if (typeof rawUrl === 'string' && document.activeElement !== urlEl) {
+      urlEl.value = rawUrl;
+    }
+    const u = urlEl.value || '';
+    if (u.startsWith('https://')) {
+      secIconEl.innerHTML = SVG_LOCK;
+      secIconEl.className = 'https';
+    } else {
+      secIconEl.innerHTML = SVG_GLOBE;
+      secIconEl.className = '';
+    }
+  }
+  updateOmniboxURL('');
 
   const clientOS = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? 'darwin' : (/Win/i.test(navigator.platform) ? 'windows' : 'linux');
 
@@ -77,6 +178,8 @@ const liveViewScript = `(function() {
   let fallbackTimer = null;
   let inFallback = false;
   let currentOpts = null;
+  let activeTargetId = '';
+  let tabOrder = [];
   let deviceW = 1280;
   let deviceH = 800;
   let isComposing = false;
@@ -90,9 +193,12 @@ const liveViewScript = `(function() {
     showToast._t = setTimeout(() => { toastEl.style.display = 'none'; }, 2200);
   }
 
-  function setStatus(text, ok = true) {
+  function setStatus(text, ok = true, detail = '') {
     statusEl.textContent = text;
-    statusEl.style.color = ok ? '#6ee7b7' : '#fcd34d';
+    statusEl.title = detail || text;
+    statusEl.style.color = ok ? '#81c995' : '#fdd663';
+    statusEl.style.borderColor = ok ? 'rgba(129, 201, 149, 0.22)' : 'rgba(253, 214, 99, 0.28)';
+    statusEl.style.background = ok ? 'rgba(129, 201, 149, 0.12)' : 'rgba(253, 214, 99, 0.10)';
   }
 
   function sendReliable(ev) {
@@ -191,29 +297,141 @@ const liveViewScript = `(function() {
     inFallback = true;
     clearTimeout(fallbackTimer);
     activateCanvas();
-    setStatus('ProxyForge 隧道保底 (' + reason + ')', false);
+    setStatus('隧道', false, 'ProxyForge 隧道保底 (' + reason + ')');
     if (sigWS && sigWS.readyState === WebSocket.OPEN) {
       sigWS.send(JSON.stringify({ type: 'fallback' }));
     }
   }
 
-  function closeSession() {
+  function renderTabs(targets, activeId) {
+    if (!Array.isArray(targets) || targets.length === 0) return;
+
+    // Preserve Chrome's stable left-to-right tab order (prevent tabs jumping left when clicked)
+    const byId = new Map();
+    for (const t of targets) byId.set(t.id, t);
+    tabOrder = tabOrder.filter((id) => byId.has(id));
+    for (const t of targets) {
+      if (!tabOrder.includes(t.id)) tabOrder.push(t.id);
+    }
+
+    tabsEl.innerHTML = '';
+    const total = tabOrder.length;
+    for (const id of tabOrder) {
+      const t = byId.get(id);
+      if (!t) continue;
+      const isAct = (t.id === activeId);
+      const tab = document.createElement('div');
+      tab.className = 'lv-tab' + (isAct ? ' active' : '');
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', isAct ? 'true' : 'false');
+      tab.dataset.targetId = t.id;
+      tab.title = (t.title || '新标签页') + (t.url ? ('\n' + t.url) : '');
+
+      const icon = document.createElement('span');
+      icon.className = 'lv-tab-icon';
+      icon.innerHTML = (t.url && t.url.startsWith('https://')) ? SVG_LOCK : SVG_GLOBE;
+
+      const title = document.createElement('span');
+      title.className = 'lv-tab-title';
+      title.textContent = t.title || (t.url === 'about:blank' ? '新标签页' : (t.url || '新标签页'));
+
+      tab.appendChild(icon);
+      tab.appendChild(title);
+
+      if (total > 1) {
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'lv-tab-close';
+        closeBtn.title = '关闭标签页';
+        closeBtn.textContent = '×';
+        closeBtn.onclick = (e) => {
+          e.stopPropagation();
+          const idx = tabOrder.indexOf(t.id);
+          const remainingIds = tabOrder.filter((x) => x !== t.id);
+          if (remainingIds.length === 0) return;
+
+          // Optimistically remove closed tab from UI immediately (0ms feedback)
+          tabOrder = remainingIds;
+          tab.remove();
+          sendReliable({ type: 'closeTab', targetId: t.id });
+
+          if (t.id === activeTargetId) {
+            // Immediately switch to Chrome-style neighbor tab (right if available, else left)
+            const nextIdx = Math.min(idx, remainingIds.length - 1);
+            const nextId = remainingIds[Math.max(0, nextIdx)];
+            if (nextId) {
+              setTimeout(() => {
+                if (activeTargetId === t.id) {
+                  switchTarget(nextId);
+                }
+              }, 80);
+            }
+          }
+        };
+        tab.appendChild(closeBtn);
+      }
+
+      tab.onclick = () => {
+        if (t.id !== activeTargetId) {
+          switchTarget(t.id);
+        }
+      };
+
+      if (isAct) {
+        activeTargetId = t.id;
+        updateOmniboxURL(t.url || '');
+      }
+      tabsEl.appendChild(tab);
+    }
+  }
+
+  function teardownTransport() {
     clearTimeout(fallbackTimer);
-    if (pc) { try { pc.close(); } catch {} pc = null; }
-    if (sigWS) { try { sigWS.close(); } catch {} sigWS = null; }
+    if (pc) {
+      pc.onconnectionstatechange = null;
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      try { pc.close(); } catch {}
+      pc = null;
+    }
+    if (sigWS) {
+      sigWS.onclose = null;
+      sigWS.onmessage = null;
+      sigWS.onerror = null;
+      try { sigWS.close(); } catch {}
+      sigWS = null;
+    }
     dcRT = null; dcRel = null; dcVideo = null;
-    videoEl.srcObject = null;
     inFallback = false;
+  }
+
+  function closeSession() {
+    teardownTransport();
+    videoEl.srcObject = null;
+    activeTargetId = '';
+    tabOrder = [];
     isComposing = false;
     imeEl.value = '';
     root.classList.remove('open');
+    document.body.style.overflow = '';
   }
 
-  async function openSession(opts) {
-    closeSession();
+  function switchTarget(newTargetId) {
+    if (!currentOpts || !newTargetId || newTargetId === activeTargetId) return;
+    activeTargetId = newTargetId;
+    openSession({ ...currentOpts, targetId: newTargetId }, true);
+  }
+
+  async function openSession(opts, keepOpen = false) {
+    if (keepOpen) {
+      teardownTransport();
+    } else {
+      closeSession();
+      root.classList.add('open');
+      document.body.style.overflow = 'hidden';
+    }
     currentOpts = opts;
-    root.classList.add('open');
-    setStatus('正在协商 WebRTC...');
+    if (opts.targetId) activeTargetId = opts.targetId;
+    setStatus(keepOpen ? '切页中' : '连接中', true, keepOpen ? '正在切换标签页...' : '正在协商 WebRTC...');
 
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const q = new URLSearchParams();
@@ -234,18 +452,7 @@ const liveViewScript = `(function() {
       const msg = JSON.parse(ev.data);
       switch (msg.type) {
         case 'hello': {
-          // Populate tab selector
-          tabsEl.innerHTML = '';
-          for (const t of (msg.targets || [])) {
-            const opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = (t.title || t.url || t.id).slice(0, 38);
-            if (t.id === msg.activeTargetId) {
-              opt.selected = true;
-              urlEl.value = t.url || '';
-            }
-            tabsEl.appendChild(opt);
-          }
+          renderTabs(msg.targets || [], msg.activeTargetId);
 
           pc = new RTCPeerConnection({ iceServers: msg.iceServers || [] });
           if (msg.videoMode === 'rtp') {
@@ -267,6 +474,9 @@ const liveViewScript = `(function() {
 
           dcRT = pc.createDataChannel('input-rt', { ordered: false, maxRetransmits: 0 });
           dcRel = pc.createDataChannel('input-reliable', { ordered: true });
+          dcRel.onopen = () => {
+            applySelectedResolution(false);
+          };
           dcRel.onmessage = (dcEv) => {
             try {
               const m = JSON.parse(dcEv.data);
@@ -293,7 +503,9 @@ const liveViewScript = `(function() {
             if (!pc) return;
             if (pc.connectionState === 'connected') {
               clearTimeout(fallbackTimer);
-              setStatus('WebRTC ' + (msg.videoMode === 'rtp' ? ('H.264 ' + msg.encoder) : 'DataChannel') + ' · ' + msg.fps + 'fps', true);
+              const shortLabel = msg.videoMode === 'rtp' ? ('H.264 ' + msg.fps + 'fps') : 'RTC';
+              const fullDetail = 'WebRTC ' + (msg.videoMode === 'rtp' ? ('H.264 ' + msg.encoder) : 'DataChannel') + ' · ' + msg.fps + 'fps';
+              setStatus(shortLabel, true, fullDetail);
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
               triggerTunnelFallback('ICE断开');
             }
@@ -323,6 +535,22 @@ const liveViewScript = `(function() {
         case 'meta':
           if (msg.deviceWidth > 0) deviceW = msg.deviceWidth;
           if (msg.deviceHeight > 0) deviceH = msg.deviceHeight;
+          break;
+        case 'nav':
+          if (msg.url) {
+            updateOmniboxURL(msg.url);
+          }
+          if (msg.switchTargetId && msg.switchTargetId !== activeTargetId) {
+            if (Array.isArray(msg.targets) && msg.targets.length > 0) {
+              renderTabs(msg.targets, msg.switchTargetId);
+            }
+            showToast('已自动切换到新标签页');
+            openSession({ ...currentOpts, targetId: msg.switchTargetId }, true);
+            break;
+          }
+          if (Array.isArray(msg.targets) && msg.targets.length > 0) {
+            renderTabs(msg.targets, msg.activeTargetId || activeTargetId);
+          }
           break;
         case 'clipboard':
           if (msg.clipboardText) {
@@ -457,16 +685,28 @@ const liveViewScript = `(function() {
   document.getElementById('lv-back').onclick = () => sendReliable({ type: 'back' });
   document.getElementById('lv-fwd').onclick = () => sendReliable({ type: 'forward' });
   document.getElementById('lv-reload').onclick = () => sendReliable({ type: 'reload' });
+  urlEl.addEventListener('focus', () => {
+    setTimeout(() => { try { urlEl.select(); } catch {} }, 0);
+  });
   urlEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-      sendReliable({ type: 'navigate', url: urlEl.value.trim() });
+      const targetUrl = urlEl.value.trim();
+      if (targetUrl) {
+        sendReliable({ type: 'navigate', url: targetUrl });
+      }
+      urlEl.blur();
+      focusIMEAt(window.innerWidth / 2, window.innerHeight / 2);
+    } else if (e.key === 'Escape') {
+      urlEl.blur();
       focusIMEAt(window.innerWidth / 2, window.innerHeight / 2);
     }
   });
-  tabsEl.addEventListener('change', () => {
-    if (currentOpts && tabsEl.value) {
-      openSession({ ...currentOpts, targetId: tabsEl.value });
-    }
+  document.getElementById('lv-newtab').onclick = () => {
+    sendReliable({ type: 'createTab', url: 'about:blank' });
+  };
+  resEl.addEventListener('change', () => {
+    localStorage.setItem('bg_lv_res', resEl.value);
+    applySelectedResolution(true);
   });
   document.getElementById('lv-paste-btn').onclick = () => {
     const txt = prompt('输入或粘贴要发送到远端当前焦点的文本（支持中文/密码/多行）:');
@@ -479,7 +719,7 @@ const liveViewScript = `(function() {
     if (!currentOpts) return;
     const q = new URLSearchParams({ user_id: currentOpts.userId });
     if (currentOpts.nodeId) q.set('node_id', currentOpts.nodeId);
-    if (tabsEl.value) q.set('target_id', tabsEl.value);
+    if (activeTargetId) q.set('target_id', activeTargetId);
     if (currentOpts.token) q.set('token', currentOpts.token);
     const dtUrl = 'devtools://devtools/bundled/inspector.html?ws=' + location.host + '/api/v1/browser/attach?' + q.toString();
     try { await navigator.clipboard.writeText(dtUrl); } catch {}

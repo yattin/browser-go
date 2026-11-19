@@ -793,6 +793,8 @@ func (gw *Gateway) handlePoolList(w http.ResponseWriter, r *http.Request) {
 	type itemWithNode struct {
 		NodeID          string `json:"node_id"`
 		UserID          string `json:"user_id"`
+		CurrentURL      string `json:"current_url,omitempty"`
+		CurrentTitle    string `json:"current_title,omitempty"`
 		LastActivity    string `json:"last_activity"`
 		IdleTimeSeconds int64  `json:"idle_time_seconds"`
 	}
@@ -834,6 +836,8 @@ func (gw *Gateway) handlePoolList(w http.ResponseWriter, r *http.Request) {
 					allItems = append(allItems, itemWithNode{
 						NodeID:          target.ID,
 						UserID:          it.UserID,
+						CurrentURL:      it.CurrentURL,
+						CurrentTitle:    it.CurrentTitle,
 						LastActivity:    it.LastActivity,
 						IdleTimeSeconds: it.IdleTimeSeconds,
 					})

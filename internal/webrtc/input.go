@@ -32,6 +32,7 @@ type InputEvent struct {
 	URL      string `json:"url,omitempty"`
 	Width    int    `json:"width,omitempty"`
 	Height   int    `json:"height,omitempty"`
+	Mobile   bool   `json:"mobile,omitempty"`
 	TargetID string `json:"targetId,omitempty"`
 }
 

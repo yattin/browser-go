@@ -158,13 +158,14 @@ const poolDashboardHTML = `<!DOCTYPE html>
             <tr>
               <th>所属内网节点 (Node ID)</th>
               <th>会话标识 (User / Ephemeral ID)</th>
+              <th>当前页面网址 (Current URL)</th>
               <th>最近活跃时间</th>
               <th>空闲时长</th>
               <th style="text-align: right;">操作</th>
             </tr>
           </thead>
           <tbody id="instances-tbody">
-            <tr><td colspan="5" class="empty">暂无运行中的浏览器实例</td></tr>
+            <tr><td colspan="6" class="empty">暂无运行中的浏览器实例</td></tr>
           </tbody>
         </table>
       </div>
@@ -327,14 +328,21 @@ const poolDashboardHTML = `<!DOCTYPE html>
 
         const tbody = document.getElementById('instances-tbody');
         if (instances.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" class="empty">当前全池无活跃浏览器实例</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">当前全池无活跃浏览器实例</td></tr>';
         } else {
           tbody.innerHTML = '';
+          const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
           for (const item of instances) {
             const tr = document.createElement('tr');
+            const curUrl = item.current_url || '-';
+            const curTitle = item.current_title || '';
             tr.innerHTML =
-              '<td class="mono">' + item.node_id + '</td>' +
-              '<td class="mono">' + item.user_id + '</td>' +
+              '<td class="mono">' + esc(item.node_id) + '</td>' +
+              '<td class="mono">' + esc(item.user_id) + '</td>' +
+              '<td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(curTitle ? (curTitle + ' — ' + curUrl) : curUrl) + '">' +
+                '<div class="mono" style="color:var(--accent);overflow:hidden;text-overflow:ellipsis;">' + esc(curUrl) + '</div>' +
+                (curTitle ? '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;">' + esc(curTitle) + '</div>' : '') +
+              '</td>' +
               '<td>' + new Date(item.last_activity).toLocaleString() + '</td>' +
               '<td>' + item.idle_time_seconds + 's</td>' +
               '<td style="text-align:right;white-space:nowrap;"><button class="takeover">实时接管</button><button class="danger">强制销毁</button></td>';

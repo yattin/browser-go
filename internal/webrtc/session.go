@@ -22,21 +22,24 @@ import (
 
 // SignalMessage is the JSON envelope exchanged over WS `/api/v1/browser/webrtc/signal`.
 type SignalMessage struct {
-	Type           string                    `json:"type"` // "hello", "offer", "answer", "candidate", "fallback", "input", "meta", "clipboard", "targets", "error"
-	SDP            string                    `json:"sdp,omitempty"`
+	Type           string                       `json:"type"` // "hello", "offer", "answer", "candidate", "fallback", "input", "meta", "nav", "clipboard", "targets", "error"
+	SDP            string                       `json:"sdp,omitempty"`
 	Candidate      *pionwebrtc.ICECandidateInit `json:"candidate,omitempty"`
-	ICEServers     []pionwebrtc.ICEServer    `json:"iceServers,omitempty"`
-	RemoteOS       string                    `json:"remoteOS,omitempty"`
-	VideoMode      string                    `json:"videoMode,omitempty"` // "rtp" (H.264) or "dc" (Unordered DataChannel)
-	Encoder        string                    `json:"encoder,omitempty"`
-	FPS            int                       `json:"fps,omitempty"`
-	ActiveTargetID string                    `json:"activeTargetId,omitempty"`
-	Targets        []chrome.TargetSnapshot   `json:"targets,omitempty"`
-	DeviceWidth    float64                   `json:"deviceWidth,omitempty"`
-	DeviceHeight   float64                   `json:"deviceHeight,omitempty"`
-	Input          *InputEvent               `json:"input,omitempty"`
-	ClipboardText  string                    `json:"clipboardText,omitempty"`
-	Error          string                    `json:"error,omitempty"`
+	ICEServers     []pionwebrtc.ICEServer       `json:"iceServers,omitempty"`
+	RemoteOS       string                       `json:"remoteOS,omitempty"`
+	VideoMode      string                       `json:"videoMode,omitempty"` // "rtp" (H.264) or "dc" (Unordered DataChannel)
+	Encoder        string                       `json:"encoder,omitempty"`
+	FPS            int                          `json:"fps,omitempty"`
+	ActiveTargetID string                       `json:"activeTargetId,omitempty"`
+	SwitchTargetID string                       `json:"switchTargetId,omitempty"`
+	Targets        []chrome.TargetSnapshot      `json:"targets,omitempty"`
+	URL            string                       `json:"url,omitempty"`
+	Title          string                       `json:"title,omitempty"`
+	DeviceWidth    float64                      `json:"deviceWidth,omitempty"`
+	DeviceHeight   float64                      `json:"deviceHeight,omitempty"`
+	Input          *InputEvent                  `json:"input,omitempty"`
+	ClipboardText  string                       `json:"clipboardText,omitempty"`
+	Error          string                       `json:"error,omitempty"`
 }
 
 // ServeTakeoverSession runs an interactive WebRTC (with automatic ProxyForge tunnel fallback) Live View session
@@ -148,7 +151,23 @@ func ServeTakeoverSession(
 	inputCh := make(chan InputEvent, 256)
 	var reliableDC atomic.Pointer[pionwebrtc.DataChannel]
 	var videoDC atomic.Pointer[pionwebrtc.DataChannel]
+	var h264EncPtr atomic.Pointer[H264PipeEncoder]
 	var fallbackMode atomic.Bool
+	var videoTrack *pionwebrtc.TrackLocalStaticSample
+
+	restartH264Encoder := func() {
+		if videoMode != "rtp" || videoTrack == nil {
+			return
+		}
+		if old := h264EncPtr.Swap(nil); old != nil {
+			old.Close()
+		}
+		if ne, nErr := StartH264PipeEncoder(sessCtx, ffmpegBin, encName, fps, func(au []byte, dur time.Duration, _ bool) {
+			_ = videoTrack.WriteSample(media.Sample{Data: au, Duration: dur})
+		}); nErr == nil {
+			h264EncPtr.Store(ne)
+		}
+	}
 
 	sendClipboardToClient := func(text string) {
 		msg := SignalMessage{Type: "clipboard", ClipboardText: text}
@@ -204,7 +223,99 @@ func ServeTakeoverSession(
 					continue
 				}
 				if ev.Type == "createTab" {
-					sendCDP("Target.createTarget", map[string]any{"url": "about:blank"})
+					go func(u string) {
+						tCtx, tCancel := context.WithTimeout(sessCtx, 3*time.Second)
+						defer tCancel()
+						if nt, tErr := chromeMgr.CreateTarget(tCtx, userKey, u); tErr == nil && nt != nil && nt.ID != "" {
+							fresh, _ := chromeMgr.ListTargets(tCtx, userKey)
+							_ = sigWS.WriteJSON(SignalMessage{
+								Type:           "nav",
+								URL:            nt.URL,
+								ActiveTargetID: activeTarget.ID,
+								SwitchTargetID: nt.ID,
+								Targets:        fresh,
+							})
+						}
+					}(ev.URL)
+					continue
+				}
+				if ev.Type == "closeTab" {
+					targetToClose := ev.TargetID
+					if targetToClose == "" {
+						targetToClose = activeTarget.ID
+					}
+					go func(cid string) {
+						// Use parent ctx (not sessCtx) because closing activeTarget terminates cdpWS & cancels sessCtx immediately!
+						tCtx, tCancel := context.WithTimeout(ctx, 3*time.Second)
+						defer tCancel()
+
+						if cid == activeTarget.ID {
+							// Pick replacement tab BEFORE closing activeTarget so sigWS stays alive to deliver switchTargetId
+							if before, bErr := chromeMgr.ListTargets(tCtx, userKey); bErr == nil {
+								var remaining []chrome.TargetSnapshot
+								for _, t := range before {
+									if t.ID != cid {
+										remaining = append(remaining, t)
+									}
+								}
+								if len(remaining) > 0 {
+									_ = sigWS.WriteJSON(SignalMessage{
+										Type:           "nav",
+										URL:            remaining[0].URL,
+										ActiveTargetID: activeTarget.ID,
+										SwitchTargetID: remaining[0].ID,
+										Targets:        remaining,
+									})
+								}
+							}
+							_ = chromeMgr.CloseTarget(tCtx, userKey, cid)
+							return
+						}
+
+						// Closing a background tab: close immediately and push updated tab strip
+						_ = chromeMgr.CloseTarget(tCtx, userKey, cid)
+						if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil && len(fresh) > 0 {
+							var remaining []chrome.TargetSnapshot
+							for _, t := range fresh {
+								if t.ID != cid {
+									remaining = append(remaining, t)
+								}
+							}
+							if len(remaining) > 0 {
+								_ = sigWS.WriteJSON(SignalMessage{
+									Type:           "nav",
+									ActiveTargetID: activeTarget.ID,
+									Targets:        remaining,
+								})
+							}
+						}
+					}(targetToClose)
+					continue
+				}
+				if ev.Type == "resize" && ev.Width >= 200 && ev.Height >= 200 {
+					w := ev.Width &^ 1
+					h := ev.Height &^ 1
+					if w > 3840 {
+						w = 3840
+					}
+					if h > 2160 {
+						h = 2160
+					}
+					sendCDP("Page.stopScreencast", map[string]any{})
+					sendCDP("Emulation.setDeviceMetricsOverride", map[string]any{
+						"width":             w,
+						"height":            h,
+						"deviceScaleFactor": 1,
+						"mobile":            ev.Mobile,
+					})
+					restartH264Encoder()
+					sendCDP("Page.startScreencast", map[string]any{
+						"format":        "jpeg",
+						"quality":       80,
+						"maxWidth":      w,
+						"maxHeight":     h,
+						"everyNthFrame": 1,
+					})
 					continue
 				}
 				for _, cmd := range TranslateInputEvent(ev, runtime.GOOS) {
@@ -239,8 +350,11 @@ func ServeTakeoverSession(
 	}
 	defer func() { _ = pc.Close() }()
 
-	var videoTrack *pionwebrtc.TrackLocalStaticSample
-	var h264Enc *H264PipeEncoder
+	defer func() {
+		if old := h264EncPtr.Swap(nil); old != nil {
+			old.Close()
+		}
+	}()
 
 	if videoMode == "rtp" {
 		videoTrack, err = pionwebrtc.NewTrackLocalStaticSample(
@@ -255,14 +369,14 @@ func ServeTakeoverSession(
 		if err == nil {
 			rtpSender, addErr := pc.AddTrack(videoTrack)
 			if addErr == nil {
-				h264Enc, err = StartH264PipeEncoder(sessCtx, ffmpegBin, encName, fps, func(au []byte, dur time.Duration, _ bool) {
+				encInst, encErr := StartH264PipeEncoder(sessCtx, ffmpegBin, encName, fps, func(au []byte, dur time.Duration, _ bool) {
 					_ = videoTrack.WriteSample(media.Sample{Data: au, Duration: dur})
 				})
-				if err != nil {
-					log.Warnf("H.264 encoder failed (%v), auto-falling back to WebRTC DataChannel video", err)
+				if encErr != nil {
+					log.Warnf("H.264 encoder failed (%v), auto-falling back to WebRTC DataChannel video", encErr)
 					videoMode = "dc"
 				} else {
-					defer h264Enc.Close()
+					h264EncPtr.Store(encInst)
 					// Read incoming RTCP packets to trigger instant keyframe recovery on PLI/FIR
 					go func() {
 						rtcpBuf := make([]byte, 1500)
@@ -275,7 +389,9 @@ func ServeTakeoverSession(
 								for _, pkt := range pkts {
 									switch pkt.(type) {
 									case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-										h264Enc.ReemitKeyframe()
+										if cur := h264EncPtr.Load(); cur != nil {
+											cur.ReemitKeyframe()
+										}
 									}
 								}
 							}
@@ -311,16 +427,103 @@ func ServeTakeoverSession(
 		}
 	})
 
-	// Enable Page domain & start CDP Screencast
+	// Bring selected tab to foreground so Chrome actively composites it (critical for multi-tab switching!)
+	_ = chromeMgr.ActivateTarget(sessCtx, userKey, activeTarget.ID)
 	sendCDP("Page.enable", map[string]any{})
+	sendCDP("Page.bringToFront", map[string]any{})
 	sendCDP("Page.startScreencast", map[string]any{
 		"format":        "jpeg",
 		"quality":       80,
-		"maxWidth":      1280,
-		"maxHeight":     800,
+		"maxWidth":      1920,
+		"maxHeight":     1080,
 		"everyNthFrame": 1,
 	})
 	defer sendCDP("Page.stopScreencast", map[string]any{})
+
+	// Watch Chrome's tab list so newly opened tabs (e.g. clicking target="_blank" links) auto-focus & sync in Live View
+	go func() {
+		knownIDs := make(map[string]struct{}, len(targets))
+		lastSig := ""
+		buildSig := func(list []chrome.TargetSnapshot) string {
+			var b strings.Builder
+			for _, t := range list {
+				b.WriteString(t.ID)
+				b.WriteByte('|')
+				b.WriteString(t.URL)
+				b.WriteByte('|')
+				b.WriteString(t.Title)
+				b.WriteByte('\n')
+			}
+			return b.String()
+		}
+		for _, t := range targets {
+			knownIDs[t.ID] = struct{}{}
+		}
+		lastSig = buildSig(targets)
+
+		tk := time.NewTicker(700 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-sessCtx.Done():
+				return
+			case <-tk.C:
+				tCtx, tCancel := context.WithTimeout(sessCtx, 1500*time.Millisecond)
+				fresh, tErr := chromeMgr.ListTargets(tCtx, userKey)
+				tCancel()
+				if tErr != nil || len(fresh) == 0 {
+					continue
+				}
+
+				// Detect any newly spawned tab (target="_blank" / window.open)
+				var newTabID string
+				activeStillExists := false
+				curURL := ""
+				freshSet := make(map[string]struct{}, len(fresh))
+				for _, t := range fresh {
+					freshSet[t.ID] = struct{}{}
+					if t.ID == activeTarget.ID {
+						activeStillExists = true
+						curURL = t.URL
+					}
+					if _, seen := knownIDs[t.ID]; !seen && newTabID == "" {
+						newTabID = t.ID
+					}
+				}
+				knownIDs = freshSet
+
+				if newTabID != "" {
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:           "nav",
+						ActiveTargetID: activeTarget.ID,
+						SwitchTargetID: newTabID,
+						Targets:        fresh,
+					})
+					return // Frontend will seamlessly re-attach to the newly opened tab
+				}
+				if !activeStillExists {
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:           "nav",
+						ActiveTargetID: activeTarget.ID,
+						SwitchTargetID: fresh[0].ID,
+						Targets:        fresh,
+					})
+					return
+				}
+
+				sig := buildSig(fresh)
+				if sig != lastSig {
+					lastSig = sig
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:           "nav",
+						URL:            curURL,
+						ActiveTargetID: activeTarget.ID,
+						Targets:        fresh,
+					})
+				}
+			}
+		}
+	}()
 
 	// Read CDP events from Chrome: feed screencast frames to H.264 encoder / DataChannel / Tunnel fallback
 	var lastW, lastH float64
@@ -363,6 +566,71 @@ func ServeTakeoverSession(
 				continue
 			}
 
+			switch msg.Method {
+			case "Page.frameNavigated":
+				var fn struct {
+					Frame struct {
+						ParentID string `json:"parentId"`
+						URL      string `json:"url"`
+					} `json:"frame"`
+				}
+				if json.Unmarshal(msg.Params, &fn) == nil && fn.Frame.ParentID == "" && fn.Frame.URL != "" {
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:           "nav",
+						URL:            fn.Frame.URL,
+						ActiveTargetID: activeTarget.ID,
+					})
+					go func(navURL string) {
+						tCtx, tCancel := context.WithTimeout(sessCtx, 2*time.Second)
+						defer tCancel()
+						if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil {
+							_ = sigWS.WriteJSON(SignalMessage{
+								Type:           "nav",
+								URL:            navURL,
+								ActiveTargetID: activeTarget.ID,
+								Targets:        fresh,
+							})
+						}
+					}(fn.Frame.URL)
+				}
+				continue
+
+			case "Page.navigatedWithinDocument":
+				var nwd struct {
+					URL string `json:"url"`
+				}
+				if json.Unmarshal(msg.Params, &nwd) == nil && nwd.URL != "" {
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:           "nav",
+						URL:            nwd.URL,
+						ActiveTargetID: activeTarget.ID,
+					})
+				}
+				continue
+
+			case "Page.loadEventFired", "Page.domContentEventFired":
+				go func() {
+					tCtx, tCancel := context.WithTimeout(sessCtx, 2*time.Second)
+					defer tCancel()
+					if fresh, tErr := chromeMgr.ListTargets(tCtx, userKey); tErr == nil {
+						curURL := ""
+						for _, t := range fresh {
+							if t.ID == activeTarget.ID {
+								curURL = t.URL
+								break
+							}
+						}
+						_ = sigWS.WriteJSON(SignalMessage{
+							Type:           "nav",
+							URL:            curURL,
+							ActiveTargetID: activeTarget.ID,
+							Targets:        fresh,
+						})
+					}
+				}()
+				continue
+			}
+
 			if msg.Method == "Page.screencastFrame" {
 				var frame struct {
 					Data      string `json:"data"`
@@ -396,8 +664,8 @@ func ServeTakeoverSession(
 				if fallbackMode.Load() {
 					// Tunnel WebSocket fallback: send raw binary JPEG frame directly
 					_ = sigWS.WriteBinary(jpegBytes)
-				} else if h264Enc != nil && videoMode == "rtp" {
-					h264Enc.PushJPEG(jpegBytes)
+				} else if curEnc := h264EncPtr.Load(); curEnc != nil && videoMode == "rtp" {
+					curEnc.PushJPEG(jpegBytes)
 				} else if dc := videoDC.Load(); dc != nil && dc.ReadyState() == pionwebrtc.DataChannelStateOpen {
 					// Zero-ffmpeg unordered WebRTC DataChannel binary JPEG frame
 					if dc.BufferedAmount() < 512*1024 {

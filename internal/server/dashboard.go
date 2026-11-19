@@ -64,8 +64,8 @@ const nodeDashboardHTML = `<!DOCTYPE html>
     <div class="section">
       <h2>本机 Chrome 实例池 (Local Managed Browsers)</h2>
       <table>
-        <thead><tr><th>会话标识</th><th>调试端口</th><th>活跃连接数</th><th>类型</th><th>空闲秒数</th><th style="text-align:right;">操作</th></tr></thead>
-        <tbody id="inst-body"><tr><td colspan="6" class="empty">暂无实例</td></tr></tbody>
+        <thead><tr><th>会话标识</th><th>当前页面网址 (URL)</th><th>调试端口</th><th>活跃连接数</th><th>类型</th><th>空闲秒数</th><th style="text-align:right;">操作</th></tr></thead>
+        <tbody id="inst-body"><tr><td colspan="7" class="empty">暂无实例</td></tr></tbody>
       </table>
     </div>
 
@@ -99,10 +99,18 @@ const nodeDashboardHTML = `<!DOCTYPE html>
       document.getElementById('k-ws').textContent = (st.active_ws_connections ?? 0) + ' / ' + dv.length;
 
       const ib = document.getElementById('inst-body');
-      ib.innerHTML = ls.length ? '' : '<tr><td colspan="6" class="empty">暂无活跃 Chrome 实例</td></tr>';
+      ib.innerHTML = ls.length ? '' : '<tr><td colspan="7" class="empty">暂无活跃 Chrome 实例</td></tr>';
+      const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       for (const it of ls) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td class="mono">' + it.user_id + '</td><td class="mono">' + (it.debug_port || '-') + '</td><td>' + (it.active_conns || 0) + '</td><td>' + (it.ephemeral ? '临时' : '持久化') + '</td><td>' + it.idle_time_seconds + 's</td><td style="text-align:right;white-space:nowrap;"><button class="takeover">实时接管</button><button class="danger">停止</button></td>';
+        const curUrl = it.current_url || '-';
+        const curTitle = it.current_title || '';
+        tr.innerHTML = '<td class="mono">' + esc(it.user_id) + '</td>' +
+          '<td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(curTitle ? (curTitle + ' — ' + curUrl) : curUrl) + '">' +
+            '<div class="mono" style="color:var(--accent);overflow:hidden;text-overflow:ellipsis;">' + esc(curUrl) + '</div>' +
+            (curTitle ? '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;">' + esc(curTitle) + '</div>' : '') +
+          '</td>' +
+          '<td class="mono">' + (it.debug_port || '-') + '</td><td>' + (it.active_conns || 0) + '</td><td>' + (it.ephemeral ? '临时' : '持久化') + '</td><td>' + it.idle_time_seconds + 's</td><td style="text-align:right;white-space:nowrap;"><button class="takeover">实时接管</button><button class="danger">停止</button></td>';
         tr.querySelector('.takeover').onclick = () => {
           if (window.BrowserGoLiveView) {
             window.BrowserGoLiveView.open({ userId: it.user_id, token: tokEl.value.trim() });
