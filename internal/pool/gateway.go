@@ -619,6 +619,8 @@ func (gw *Gateway) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/browser/targets", gw.handlePoolTargets)
 	mux.HandleFunc("/api/v1/browser/attach", gw.handlePoolAttach)
 	mux.HandleFunc("/api/v1/browser/webrtc/signal", gw.handlePoolWebRTCSignal)
+	mux.HandleFunc("/api/v1/browser/handoff", gw.handlePoolHandoff)
+	mux.HandleFunc("/api/v1/browser/handoff/resume", gw.handlePoolHandoffResume)
 	mux.HandleFunc("/", gw.handleRootOrCDPProxy)
 }
 
@@ -794,12 +796,13 @@ func (gw *Gateway) handlePoolList(w http.ResponseWriter, r *http.Request) {
 	gw.mu.RUnlock()
 
 	type itemWithNode struct {
-		NodeID          string `json:"node_id"`
-		UserID          string `json:"user_id"`
-		CurrentURL      string `json:"current_url,omitempty"`
-		CurrentTitle    string `json:"current_title,omitempty"`
-		LastActivity    string `json:"last_activity"`
-		IdleTimeSeconds int64  `json:"idle_time_seconds"`
+		NodeID          string               `json:"node_id"`
+		UserID          string               `json:"user_id"`
+		CurrentURL      string               `json:"current_url,omitempty"`
+		CurrentTitle    string               `json:"current_title,omitempty"`
+		Handoff         *chrome.HandoffState `json:"handoff,omitempty"`
+		LastActivity    string               `json:"last_activity"`
+		IdleTimeSeconds int64                `json:"idle_time_seconds"`
 	}
 
 	var mu sync.Mutex
@@ -841,6 +844,7 @@ func (gw *Gateway) handlePoolList(w http.ResponseWriter, r *http.Request) {
 						UserID:          it.UserID,
 						CurrentURL:      it.CurrentURL,
 						CurrentTitle:    it.CurrentTitle,
+						Handoff:         it.Handoff,
 						LastActivity:    it.LastActivity,
 						IdleTimeSeconds: it.IdleTimeSeconds,
 					})
@@ -1119,6 +1123,86 @@ func (gw *Gateway) handlePoolWebRTCSignal(w http.ResponseWriter, r *http.Request
 	gw.log.Infof("Routing WebRTC Live View (user=%q) -> node [%s] (%s)", userID, nd.ID, nd.Source)
 	w.Header().Set("X-Browser-Node", nd.ID)
 	_ = wsutil.ProxyRawWebSocket(r.Context(), w, r, targetWS, nd.dialFn, nil)
+}
+
+func (gw *Gateway) proxyHandoffRequest(w http.ResponseWriter, r *http.Request, endpointPath string, longTimeout bool) {
+	if !gw.checkManagementAuth(w, r) {
+		return
+	}
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	}
+	var meta struct {
+		UserID string `json:"user_id"`
+		NodeID string `json:"node_id"`
+	}
+	if len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &meta)
+	}
+	userID := strings.TrimSpace(meta.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(r.URL.Query().Get("user_id"))
+	}
+	nodeID := strings.TrimSpace(meta.NodeID)
+	if nodeID == "" {
+		nodeID = strings.TrimSpace(r.URL.Query().Get("node_id"))
+	}
+	if userID == "" {
+		writePoolJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+		return
+	}
+	nd, err := gw.resolveNodeForUser(r.Context(), userID, nodeID)
+	if err != nil {
+		writePoolJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+
+	u := nd.BaseHTTP + endpointPath
+	if rawQ := r.URL.RawQuery; rawQ != "" {
+		u += "?" + rawQ
+	}
+	var bodyReader io.Reader
+	if len(bodyBytes) > 0 {
+		bodyReader = strings.NewReader(string(bodyBytes))
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, u, bodyReader)
+	if err != nil {
+		writePoolJSON(w, http.StatusInternalServerError, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	if gw.cfg.Token != "" {
+		req.Header.Set("X-API-Token", gw.cfg.Token)
+	}
+
+	cli := nd.httpClient
+	if longTimeout {
+		// Blocking handoff waits up to 30 minutes for human operator to resume
+		cli = &http.Client{
+			Transport: nd.httpClient.Transport,
+			Timeout:   31 * time.Minute,
+		}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		writePoolJSON(w, http.StatusBadGateway, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (gw *Gateway) handlePoolHandoff(w http.ResponseWriter, r *http.Request) {
+	gw.proxyHandoffRequest(w, r, "/api/v1/browser/handoff", r.Method == http.MethodPost)
+}
+
+func (gw *Gateway) handlePoolHandoffResume(w http.ResponseWriter, r *http.Request) {
+	gw.proxyHandoffRequest(w, r, "/api/v1/browser/handoff/resume", false)
 }
 
 func parsePoolPathParams(pathname string) map[string]string {

@@ -516,6 +516,7 @@ class TabShareExtension {
       this.lastHeartbeat = Date.now(); // Initialize heartbeat
       
       this.setConnectionState('connected');
+      await this.isolateTabInGroup(tabId);
       debugLog(`Tab ${tabId} connected successfully`);
 
     } catch (error) {
@@ -523,6 +524,29 @@ class TabShareExtension {
       await this.cleanupConnection(true);
       this.setConnectionState('error');
       throw error; // Re-throw for popup to handle
+    }
+  }
+
+  /**
+   * Place the AI-controlled tab into a dedicated Chrome Tab Group ("Browser-Go AI")
+   * so background automation stays cleanly separated from the user's own tabs.
+   * @param {number} tabId
+   * @param {{ collapsed?: boolean }} [opts]
+   */
+  async isolateTabInGroup(tabId, opts = {}) {
+    try {
+      if (!chrome.tabs?.group || !chrome.tabGroups?.update) return;
+      const cfg = await chrome.storage.local.get(['isolateTabGroup']);
+      if (cfg.isolateTabGroup === false) return;
+      const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+      await chrome.tabGroups.update(groupId, {
+        title: 'Browser-Go AI',
+        color: 'cyan',
+        collapsed: Boolean(opts.collapsed),
+      });
+      debugLog(`Grouped tab ${tabId} into TabGroup ${groupId} (Browser-Go AI)`);
+    } catch (err) {
+      debugLog('TabGroup isolation skipped:', err?.message || err);
     }
   }
 

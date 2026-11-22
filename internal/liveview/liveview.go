@@ -65,6 +65,10 @@ const liveViewScript = `(function() {
     '.lv-tool-btn:active { background: rgba(232,234,237,0.2); }',
     '.lv-tool-btn svg { width: 14px; height: 14px; fill: currentColor; opacity: 0.85; }',
     '.lv-tool-btn.accent svg { color: #8ab4f8; opacity: 1; }',
+    '#lv-handoff-bar { display: none; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 14px; background: linear-gradient(90deg, rgba(245,158,11,0.18), rgba(217,119,6,0.12)); border-bottom: 1px solid rgba(245,158,11,0.45); color: #fde68a; font-size: 12.5px; }',
+    '#lv-handoff-bar.show { display: flex; }',
+    '#lv-handoff-resume { height: 26px; padding: 0 12px; border-radius: 999px; border: none; background: #10b981; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }',
+    '#lv-handoff-resume:hover { background: #059669; }',
     '#lv-stage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #121316; cursor: default; user-select: none; }',
     '#lv-video, #lv-canvas { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; outline: none; display: none; }',
     '#lv-video.active, #lv-canvas.active { display: block; }',
@@ -108,6 +112,10 @@ const liveViewScript = `(function() {
     '  <button id="lv-paste-btn" class="lv-tool-btn accent" title="将文本直接注入远端当前焦点输入框"><svg viewBox="0 0 24 24"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>文本</button>',
     '  <button id="lv-devtools-btn" class="lv-tool-btn" title="复制 Chrome 原生 DevTools 调试链接"><svg viewBox="0 0 24 24"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>DevTools</button>',
     '</div>',
+    '<div id="lv-handoff-bar">',
+    '  <span id="lv-handoff-text">🤖 Agent 正在等待人工协助...</span>',
+    '  <button id="lv-handoff-resume">✓ 完成并交还 Agent</button>',
+    '</div>',
     '<div id="lv-stage">',
     '  <video id="lv-video" autoplay playsinline muted></video>',
     '  <canvas id="lv-canvas"></canvas>',
@@ -149,6 +157,39 @@ const liveViewScript = `(function() {
   const tabsEl = document.getElementById('lv-tabs');
   const statusEl = document.getElementById('lv-status');
   const toastEl = document.getElementById('lv-toast');
+  const handoffBarEl = document.getElementById('lv-handoff-bar');
+  const handoffTextEl = document.getElementById('lv-handoff-text');
+  const handoffResumeBtn = document.getElementById('lv-handoff-resume');
+
+  function updateHandoffBanner(ho) {
+    if (ho && ho.status === 'waiting') {
+      handoffTextEl.textContent = '🤖 Agent 请求人工接管：' + (ho.reason || '请完成操作后交还');
+      handoffBarEl.classList.add('show');
+    } else {
+      handoffBarEl.classList.remove('show');
+    }
+  }
+
+  handoffResumeBtn.onclick = async () => {
+    if (!currentOpts) return;
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (currentOpts.token) headers['X-API-Token'] = currentOpts.token;
+      const res = await fetch('/api/v1/browser/handoff/resume', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ user_id: currentOpts.userId, node_id: currentOpts.nodeId || '', note: 'Human completed via Live View' })
+      });
+      if (res.ok) {
+        updateHandoffBanner(null);
+        showToast('已交还控制权给 Agent，自动化任务继续执行');
+      } else {
+        showToast('交还失败: HTTP ' + res.status);
+      }
+    } catch (e) {
+      showToast('交还请求异常: ' + e.message);
+    }
+  };
 
   const SVG_LOCK = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>';
   const SVG_GLOBE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
@@ -453,6 +494,7 @@ const liveViewScript = `(function() {
       switch (msg.type) {
         case 'hello': {
           renderTabs(msg.targets || [], msg.activeTargetId);
+          updateHandoffBanner(msg.handoff || null);
 
           pc = new RTCPeerConnection({ iceServers: msg.iceServers || [] });
           if (msg.videoMode === 'rtp') {
@@ -551,6 +593,9 @@ const liveViewScript = `(function() {
           if (Array.isArray(msg.targets) && msg.targets.length > 0) {
             renderTabs(msg.targets, msg.activeTargetId || activeTargetId);
           }
+          break;
+        case 'handoff':
+          updateHandoffBanner(msg.handoff || null);
           break;
         case 'clipboard':
           if (msg.clipboardText) {

@@ -161,14 +161,15 @@ type VersionInfo struct {
 
 // InstanceSnapshot matches OpenAPI `BrowserInstance`.
 type InstanceSnapshot struct {
-	UserID          string `json:"user_id"`
-	LastActivity    string `json:"last_activity"`
-	IdleTimeSeconds int64  `json:"idle_time_seconds"`
-	ActiveConns     int32  `json:"active_conns,omitempty"`
-	Ephemeral       bool   `json:"ephemeral,omitempty"`
-	DebugPort       int    `json:"debug_port,omitempty"`
-	CurrentURL      string `json:"current_url,omitempty"`
-	CurrentTitle    string `json:"current_title,omitempty"`
+	UserID          string        `json:"user_id"`
+	LastActivity    string        `json:"last_activity"`
+	IdleTimeSeconds int64         `json:"idle_time_seconds"`
+	ActiveConns     int32         `json:"active_conns,omitempty"`
+	Ephemeral       bool          `json:"ephemeral,omitempty"`
+	DebugPort       int           `json:"debug_port,omitempty"`
+	CurrentURL      string        `json:"current_url,omitempty"`
+	CurrentTitle    string        `json:"current_title,omitempty"`
+	Handoff         *HandoffState `json:"handoff,omitempty"`
 }
 
 // StatsSnapshot matches OpenAPI `SystemStatsData`.
@@ -282,6 +283,7 @@ type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*ManagedInstance
 	inflight  map[string]*inflightLaunch
+	handoffs  map[string]*pendingHandoff
 	reserved  int // slots reserved by currently booting instances
 
 	stopCh chan struct{}
@@ -319,6 +321,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		qinghuCli: qinghu.NewClient(cfg.QinghuDataDir),
 		instances: make(map[string]*ManagedInstance),
 		inflight:  make(map[string]*inflightLaunch),
+		handoffs:  make(map[string]*pendingHandoff),
 		stopCh:    make(chan struct{}),
 	}
 
@@ -988,6 +991,10 @@ func (m *Manager) ListInstances() []InstanceSnapshot {
 			ActiveConns:     inst.ActiveConnections(),
 			Ephemeral:       inst.IsEphemeral,
 			DebugPort:       inst.DebugPort,
+		}
+		if ph, ok := m.handoffs[inst.Key]; ok && ph.state.Status == "waiting" {
+			cp := ph.state
+			snap.Handoff = &cp
 		}
 		inst.metaMu.Lock()
 		fresh := now.Sub(inst.cachedAt) < time.Second

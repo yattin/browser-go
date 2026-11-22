@@ -17,6 +17,7 @@ import (
 	"browser-go/internal/chrome"
 	"browser-go/internal/config"
 	"browser-go/internal/logger"
+	"browser-go/internal/mcpserver"
 	"browser-go/internal/pool"
 	"browser-go/internal/server"
 	"browser-go/internal/winsvc"
@@ -46,6 +47,21 @@ func main() {
 	case "service":
 		if err := runServiceCmd(cmd.Service); err != nil {
 			fmt.Fprintf(os.Stderr, "service %s failed: %v\n", cmd.Service.Action, err)
+			os.Exit(1)
+		}
+		return
+	case "mcp":
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		srv := mcpserver.NewServer(mcpserver.Config{
+			Endpoint:    cmd.MCP.Endpoint,
+			Token:       cmd.MCP.Token,
+			DefaultUser: cmd.MCP.DefaultUser,
+			Provider:    cmd.MCP.Provider,
+			Tags:        cmd.MCP.Tags,
+		})
+		if err := srv.ServeStdio(ctx, os.Stdin, os.Stdout); err != nil && err != context.Canceled {
+			fmt.Fprintf(os.Stderr, "mcp failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -416,6 +432,7 @@ func printHelp() {
 Usage:
   browser-go [node] [options]          Start a Browser-Go worker node (Web Console at /dashboard)
   browser-go pool [options]            Start a multi-node CDP Browser Pool Gateway (Web Console at /dashboard)
+  browser-go mcp [options]             Start a stdio Model Context Protocol (MCP) server for AI Agents
   browser-go keygen [options]          Generate ProxyForge-compatible mTLS Root CA / Leaf certificates
   browser-go install [-n Name] [args]  Register native Windows SCM auto-start service (requires Admin)
   browser-go uninstall [-n Name]       Stop and remove Windows SCM service

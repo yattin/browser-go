@@ -135,11 +135,21 @@ type ServiceConfig struct {
 	JSONOut     bool
 }
 
+// MCPConfig configures the built-in stdio Model Context Protocol (MCP) server (`browser-go mcp`).
+type MCPConfig struct {
+	Endpoint    string
+	Token       string
+	DefaultUser string
+	Provider    string
+	Tags        string
+}
+
 // Command represents the parsed top-level CLI invocation.
 type Command struct {
-	Subcommand string // "node", "pool", "keygen", "service", "version", "help"
+	Subcommand string // "node", "pool", "mcp", "keygen", "service", "version", "help"
 	Node       NodeConfig
 	Pool       PoolConfig
+	MCP        MCPConfig
 	Keygen     KeygenConfig
 	Service    ServiceConfig
 }
@@ -216,12 +226,17 @@ func ParseCLI(args []string) (Command, error) {
 			Name:        "BrowserGo",
 			DisplayName: "Browser-Go CDP Service",
 		},
+		MCP: MCPConfig{
+			Endpoint:    "http://127.0.0.1:3000",
+			Token:       "browser-go-token",
+			DefaultUser: "mcp-agent",
+		},
 	}
 
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub := strings.ToLower(strings.TrimSpace(args[0]))
 		switch sub {
-		case "node", "pool", "keygen", "version", "help":
+		case "node", "pool", "mcp", "keygen", "version", "help":
 			cmd.Subcommand = sub
 			args = args[1:]
 		case "service":
@@ -253,6 +268,10 @@ func ParseCLI(args []string) (Command, error) {
 		if err := parsePoolFlags(&cmd, args); err != nil {
 			return cmd, err
 		}
+	case "mcp":
+		if err := parseMCPFlags(&cmd, args); err != nil {
+			return cmd, err
+		}
 	case "keygen":
 		if err := parseKeygenFlags(&cmd, args); err != nil {
 			return cmd, err
@@ -263,6 +282,56 @@ func ParseCLI(args []string) (Command, error) {
 		}
 	}
 	return cmd, nil
+}
+
+func parseMCPFlags(cmd *Command, args []string) error {
+	m := &cmd.MCP
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-h" || arg == "--help" {
+			cmd.Subcommand = "help"
+			return nil
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, val, hasVal := splitFlag(arg)
+		switch name {
+		case "endpoint", "url":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			m.Endpoint = v
+		case "token":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			m.Token = v
+		case "user":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			m.DefaultUser = v
+		case "provider":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			m.Provider = v
+		case "tags":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			m.Tags = v
+		default:
+			return fmt.Errorf("unknown mcp flag %q", arg)
+		}
+	}
+	return nil
 }
 
 func nextVal(args []string, i *int, inlineVal string, hasInline bool) (string, error) {

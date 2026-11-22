@@ -8,6 +8,7 @@
     "debugger",
     "activeTab",
     "tabs",
+    "tabGroups",
     "storage"
   ],
 

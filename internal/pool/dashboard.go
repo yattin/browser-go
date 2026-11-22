@@ -53,6 +53,11 @@ const poolDashboardHTML = `<!DOCTYPE html>
     button.secondary { background: #1e293b; border: 1px solid var(--border); color: var(--text); }
     button.takeover { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.45); padding: 4px 10px; font-size: 12px; margin-right: 6px; }
     button.takeover:hover { background: var(--accent-dark); color: #fff; }
+    button.takeover.urgent { background: rgba(245, 158, 11, 0.25); color: #fde68a; border-color: rgba(245, 158, 11, 0.7); }
+    button.takeover.urgent:hover { background: #d97706; color: #fff; }
+    button.resume-ho { background: rgba(16, 185, 129, 0.22); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.5); padding: 4px 10px; font-size: 12px; margin-right: 6px; }
+    button.resume-ho:hover { background: #10b981; color: #fff; }
+    .ho-badge { display: inline-block; margin-top: 4px; font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(245, 158, 11, 0.18); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.45); }
     button.danger { background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); padding: 4px 10px; font-size: 12px; }
     button.danger:hover { background: var(--danger); color: #fff; }
     main { max-width: 1280px; margin: 22px auto; padding: 0 24px 48px; display: flex; flex-direction: column; gap: 22px; }
@@ -336,21 +341,37 @@ const poolDashboardHTML = `<!DOCTYPE html>
             const tr = document.createElement('tr');
             const curUrl = item.current_url || '-';
             const curTitle = item.current_title || '';
+            const ho = item.handoff && item.handoff.status === 'waiting' ? item.handoff : null;
             tr.innerHTML =
               '<td class="mono">' + esc(item.node_id) + '</td>' +
-              '<td class="mono">' + esc(item.user_id) + '</td>' +
+              '<td class="mono">' + esc(item.user_id) + (ho ? '<div><span class="ho-badge">⚠ 待人工接管: ' + esc(ho.reason) + '</span></div>' : '') + '</td>' +
               '<td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(curTitle ? (curTitle + ' — ' + curUrl) : curUrl) + '">' +
                 '<div class="mono" style="color:var(--accent);overflow:hidden;text-overflow:ellipsis;">' + esc(curUrl) + '</div>' +
                 (curTitle ? '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;">' + esc(curTitle) + '</div>' : '') +
               '</td>' +
               '<td>' + new Date(item.last_activity).toLocaleString() + '</td>' +
               '<td>' + item.idle_time_seconds + 's</td>' +
-              '<td style="text-align:right;white-space:nowrap;"><button class="takeover">实时接管</button><button class="danger">强制销毁</button></td>';
+              '<td style="text-align:right;white-space:nowrap;">' +
+                '<button class="takeover' + (ho ? ' urgent' : '') + '">' + (ho ? '立即接管' : '实时接管') + '</button>' +
+                (ho ? '<button class="resume-ho">交还 Agent</button>' : '') +
+                '<button class="danger">强制销毁</button>' +
+              '</td>';
             tr.querySelector('.takeover').addEventListener('click', () => {
               if (window.BrowserGoLiveView) {
                 window.BrowserGoLiveView.open({ userId: item.user_id, nodeId: item.node_id, token: tokenInput.value.trim() });
               }
             });
+            const resumeBtn = tr.querySelector('.resume-ho');
+            if (resumeBtn) {
+              resumeBtn.addEventListener('click', async () => {
+                await fetch('/api/v1/browser/handoff/resume', {
+                  method: 'POST',
+                  headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ user_id: item.user_id, node_id: item.node_id, note: 'Resumed from Pool Dashboard' })
+                });
+                refreshAll();
+              });
+            }
             tr.querySelector('.danger').addEventListener('click', () => stopInstance(item.node_id, item.user_id));
             tbody.appendChild(tr);
           }

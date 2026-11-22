@@ -26,6 +26,9 @@ const nodeDashboardHTML = `<!DOCTYPE html>
     button.secondary { background: #1e293b; border: 1px solid var(--border); }
     button.takeover { background: rgba(56,189,248,0.18); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.45); padding: 4px 10px; font-size: 12px; margin-right: 6px; }
     button.takeover:hover { background: #0284c7; color: #fff; }
+    button.takeover.urgent { background: rgba(245,158,11,0.25); color: #fde68a; border-color: rgba(245,158,11,0.7); }
+    button.resume-ho { background: rgba(16,185,129,0.22); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.5); padding: 4px 10px; font-size: 12px; margin-right: 6px; }
+    .ho-badge { display: inline-block; margin-top: 3px; font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(245,158,11,0.18); color: #fcd34d; border: 1px solid rgba(245,158,11,0.45); }
     button.danger { background: rgba(239,68,68,0.2); color: #fca5a5; border: 1px solid rgba(239,68,68,0.4); padding: 4px 10px; font-size: 12px; }
     main { max-width: 1120px; margin: 22px auto; padding: 0 24px 48px; display: flex; flex-direction: column; gap: 20px; }
     .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
@@ -105,17 +108,34 @@ const nodeDashboardHTML = `<!DOCTYPE html>
         const tr = document.createElement('tr');
         const curUrl = it.current_url || '-';
         const curTitle = it.current_title || '';
-        tr.innerHTML = '<td class="mono">' + esc(it.user_id) + '</td>' +
+        const ho = it.handoff && it.handoff.status === 'waiting' ? it.handoff : null;
+        tr.innerHTML = '<td class="mono">' + esc(it.user_id) + (ho ? '<div><span class="ho-badge">⚠ 待人工接管: ' + esc(ho.reason) + '</span></div>' : '') + '</td>' +
           '<td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(curTitle ? (curTitle + ' — ' + curUrl) : curUrl) + '">' +
             '<div class="mono" style="color:var(--accent);overflow:hidden;text-overflow:ellipsis;">' + esc(curUrl) + '</div>' +
             (curTitle ? '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;">' + esc(curTitle) + '</div>' : '') +
           '</td>' +
-          '<td class="mono">' + (it.debug_port || '-') + '</td><td>' + (it.active_conns || 0) + '</td><td>' + (it.ephemeral ? '临时' : '持久化') + '</td><td>' + it.idle_time_seconds + 's</td><td style="text-align:right;white-space:nowrap;"><button class="takeover">实时接管</button><button class="danger">停止</button></td>';
+          '<td class="mono">' + (it.debug_port || '-') + '</td><td>' + (it.active_conns || 0) + '</td><td>' + (it.ephemeral ? '临时' : '持久化') + '</td><td>' + it.idle_time_seconds + 's</td>' +
+          '<td style="text-align:right;white-space:nowrap;">' +
+            '<button class="takeover' + (ho ? ' urgent' : '') + '">' + (ho ? '立即接管' : '实时接管') + '</button>' +
+            (ho ? '<button class="resume-ho">交还 Agent</button>' : '') +
+            '<button class="danger">停止</button>' +
+          '</td>';
         tr.querySelector('.takeover').onclick = () => {
           if (window.BrowserGoLiveView) {
             window.BrowserGoLiveView.open({ userId: it.user_id, token: tokEl.value.trim() });
           }
         };
+        const rBtn = tr.querySelector('.resume-ho');
+        if (rBtn) {
+          rBtn.onclick = async () => {
+            await fetch('/api/v1/browser/handoff/resume', {
+              method: 'POST',
+              headers: { ...hdrs(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: it.user_id, note: 'Resumed from Node Dashboard' })
+            });
+            load();
+          };
+        }
         tr.querySelector('.danger').onclick = async () => {
           await fetch('/api/v1/browser/stop?user_id=' + encodeURIComponent(it.user_id), { headers: hdrs() });
           load();

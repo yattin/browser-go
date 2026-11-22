@@ -39,6 +39,7 @@ type SignalMessage struct {
 	DeviceHeight   float64                      `json:"deviceHeight,omitempty"`
 	Input          *InputEvent                  `json:"input,omitempty"`
 	ClipboardText  string                       `json:"clipboardText,omitempty"`
+	Handoff        *chrome.HandoffState         `json:"handoff,omitempty"`
 	Error          string                       `json:"error,omitempty"`
 }
 
@@ -127,7 +128,7 @@ func ServeTakeoverSession(
 		videoMode = "rtp"
 	}
 
-	// Send initial handshake hello with ICE config, capabilities, and target list
+	// Send initial handshake hello with ICE config, capabilities, target list, and any active handoff
 	_ = sigWS.WriteJSON(SignalMessage{
 		Type:           "hello",
 		ICEServers:     iceServers,
@@ -137,6 +138,7 @@ func ServeTakeoverSession(
 		FPS:            fps,
 		ActiveTargetID: activeTarget.ID,
 		Targets:        targets,
+		Handoff:        chromeMgr.GetHandoff(userKey),
 	})
 
 	// CDP command helper with monotonic IDs
@@ -468,6 +470,10 @@ func ServeTakeoverSession(
 			knownIDs[t.ID] = struct{}{}
 		}
 		lastSig = buildSig(targets)
+		lastHandoffID := ""
+		if curHO := chromeMgr.GetHandoff(userKey); curHO != nil {
+			lastHandoffID = curHO.ID
+		}
 
 		tk := time.NewTicker(700 * time.Millisecond)
 		defer tk.Stop()
@@ -476,6 +482,19 @@ func ServeTakeoverSession(
 			case <-sessCtx.Done():
 				return
 			case <-tk.C:
+				curHO := chromeMgr.GetHandoff(userKey)
+				curHOID := ""
+				if curHO != nil {
+					curHOID = curHO.ID
+				}
+				if curHOID != lastHandoffID {
+					lastHandoffID = curHOID
+					_ = sigWS.WriteJSON(SignalMessage{
+						Type:    "handoff",
+						Handoff: curHO,
+					})
+				}
+
 				tCtx, tCancel := context.WithTimeout(sessCtx, 1500*time.Millisecond)
 				fresh, tErr := chromeMgr.ListTargets(tCtx, userKey)
 				tCancel()

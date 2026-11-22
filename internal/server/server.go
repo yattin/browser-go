@@ -198,6 +198,8 @@ func (s *NodeServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/browser/targets", s.handleBrowserTargets)
 	mux.HandleFunc("/api/v1/browser/attach", s.handleBrowserAttach)
 	mux.HandleFunc("/api/v1/browser/webrtc/signal", s.handleWebRTCSignal)
+	mux.HandleFunc("/api/v1/browser/handoff", s.handleBrowserHandoff)
+	mux.HandleFunc("/api/v1/browser/handoff/resume", s.handleBrowserHandoffResume)
 	mux.HandleFunc("/api/v1/devices", s.handleDevicesList)
 	mux.HandleFunc("/api/v1/devices/", s.handleDeviceByID)
 	mux.HandleFunc("/api/v1/device/stats", s.handleDeviceStats)
@@ -499,6 +501,99 @@ func (s *NodeServer) handleWebRTCSignal(w http.ResponseWriter, r *http.Request) 
 	s.ActiveWSConns.Add(1)
 	defer s.ActiveWSConns.Add(-1)
 	bgwebrtc.ServeTakeoverSession(r.Context(), ws, s.chromeMgr, userID, targetID, s.cfg.WebRTC, extraICE, s.log)
+}
+
+func (s *NodeServer) handleBrowserHandoff(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeManagement(w, r) {
+		return
+	}
+	if r.Method == http.MethodGet {
+		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+		if userID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"code": 0,
+			"msg":  "success",
+			"data": s.chromeMgr.GetHandoff(userID),
+		})
+		return
+	}
+
+	var req struct {
+		UserID     string `json:"user_id"`
+		Reason     string `json:"reason"`
+		TimeoutSec int    `json:"timeout_sec"`
+		Async      bool   `json:"async"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.UserID == "" {
+		req.UserID = strings.TrimSpace(r.URL.Query().Get("user_id"))
+	}
+	if req.Reason == "" {
+		req.Reason = strings.TrimSpace(r.URL.Query().Get("reason"))
+	}
+	if req.TimeoutSec <= 0 {
+		if ts, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("timeout_sec"))); err == nil && ts > 0 {
+			req.TimeoutSec = ts
+		} else {
+			req.TimeoutSec = 300
+		}
+	}
+	if !req.Async && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("async")), "true") {
+		req.Async = true
+	}
+	if req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+		return
+	}
+
+	st, err := s.chromeMgr.RequestHandoff(r.Context(), req.UserID, req.Reason, time.Duration(req.TimeoutSec)*time.Second, req.Async)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"msg":  "success",
+		"data": st,
+	})
+}
+
+func (s *NodeServer) handleBrowserHandoffResume(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeManagement(w, r) {
+		return
+	}
+	var req struct {
+		UserID string `json:"user_id"`
+		Note   string `json:"note"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.UserID == "" {
+		req.UserID = strings.TrimSpace(r.URL.Query().Get("user_id"))
+	}
+	if req.Note == "" {
+		req.Note = strings.TrimSpace(r.URL.Query().Get("note"))
+	}
+	if req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": -1, "msg": "Missing user_id parameter"})
+		return
+	}
+	st, ok := s.chromeMgr.ResumeHandoff(req.UserID, req.Note)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": -1, "msg": "No waiting handoff found for user_id"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"msg":  "success",
+		"data": st,
+	})
 }
 
 func (s *NodeServer) handleDevicesList(w http.ResponseWriter, r *http.Request) {
