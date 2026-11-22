@@ -269,8 +269,8 @@ const liveViewScript = `(function() {
     const rect = activeEl.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
 
-    const srcW = (activeEl === videoEl && videoEl.videoWidth > 0) ? videoEl.videoWidth : (canvasEl.width || deviceW);
-    const srcH = (activeEl === videoEl && videoEl.videoHeight > 0) ? videoEl.videoHeight : (canvasEl.height || deviceH);
+    const srcW = (activeEl === videoEl) ? (videoEl.videoWidth || deviceW) : (canvasEl.width || deviceW);
+    const srcH = (activeEl === videoEl) ? (videoEl.videoHeight || deviceH) : (canvasEl.height || deviceH);
     const elemRatio = rect.width / rect.height;
     const mediaRatio = srcW / srcH;
 
@@ -289,8 +289,8 @@ const liveViewScript = `(function() {
     const relX = Math.max(0, Math.min(1, (clientX - rect.left - offsetX) / renderW));
     const relY = Math.max(0, Math.min(1, (clientY - rect.top - offsetY) / renderH));
     return {
-      x: Math.round(relX * deviceW),
-      y: Math.round(relY * deviceH)
+      x: Math.round(relX * deviceW * 10) / 10,
+      y: Math.round(relY * deviceH * 10) / 10
     };
   }
 
@@ -617,32 +617,81 @@ const liveViewScript = `(function() {
     };
   }
 
-  // --- Mouse & Wheel Events (60Hz rAF coalescing for ultra-smooth cursor) ---
-  stageEl.addEventListener('mousemove', (e) => {
-    pendingMove = { ...mapCoords(e.clientX, e.clientY), buttons: e.buttons, modifiers: getModifiers(e) };
+  // --- Mouse & Wheel Events (Ordered Drag Pipeline + Shift 0.25x Precision Micro-Adjust) ---
+  let isDragging = false;
+  let dragLastPos = null;
+  let dragVirtualPos = null;
+
+  function computeDragPos(e) {
+    const raw = mapCoords(e.clientX, e.clientY);
+    if (!isDragging || !dragLastPos || !dragVirtualPos) {
+      return raw;
+    }
+    const dx = raw.x - dragLastPos.x;
+    const dy = raw.y - dragLastPos.y;
+    dragLastPos = raw;
+    // Holding Shift switches to 0.25x precision drag so slider puzzles align to the exact pixel
+    const scale = e.shiftKey ? 0.25 : 1.0;
+    dragVirtualPos = {
+      x: Math.max(0, Math.min(deviceW, Math.round((dragVirtualPos.x + dx * scale) * 10) / 10)),
+      y: Math.max(0, Math.min(deviceH, Math.round((dragVirtualPos.y + dy * scale) * 10) / 10))
+    };
+    return dragVirtualPos;
+  }
+
+  function flushMoveNow(evPayload, reliable) {
+    pendingMove = null;
+    if (reliable) {
+      sendReliable({ type: 'mousemove', ...evPayload });
+    } else {
+      sendRealtime({ type: 'mousemove', ...evPayload });
+    }
+  }
+
+  function handlePointerMove(e) {
+    if (!root.classList.contains('open')) return;
+    if (!isDragging && e.target !== stageEl && !stageEl.contains(e.target)) return;
+
+    const dragging = isDragging || e.buttons !== 0;
+    const pos = dragging ? computeDragPos(e) : mapCoords(e.clientX, e.clientY);
+    pendingMove = { x: pos.x, y: pos.y, buttons: e.buttons, modifiers: getModifiers(e), reliable: dragging };
     if (!rafScheduled) {
       rafScheduled = true;
       requestAnimationFrame(() => {
         rafScheduled = false;
         if (pendingMove) {
-          sendRealtime({ type: 'mousemove', ...pendingMove });
-          pendingMove = null;
+          const mv = pendingMove;
+          flushMoveNow({ x: mv.x, y: mv.y, buttons: mv.buttons, modifiers: mv.modifiers }, mv.reliable);
         }
       });
     }
-  });
+  }
+
+  window.addEventListener('mousemove', handlePointerMove);
 
   stageEl.addEventListener('mousedown', (e) => {
     e.preventDefault();
     const pos = mapCoords(e.clientX, e.clientY);
-    sendReliable({ type: 'mousedown', x: pos.x, y: pos.y, button: btnName(e.button), buttons: e.buttons, clickCount: e.detail || 1, modifiers: getModifiers(e) });
+    isDragging = true;
+    dragLastPos = pos;
+    dragVirtualPos = { x: pos.x, y: pos.y };
+    // Send exact pre-press cursor position over the SAME ordered reliable channel before mousedown
+    flushMoveNow({ x: pos.x, y: pos.y, buttons: 0, modifiers: getModifiers(e) }, true);
+    sendReliable({ type: 'mousedown', x: pos.x, y: pos.y, button: btnName(e.button), buttons: e.buttons || 1, clickCount: e.detail || 1, modifiers: getModifiers(e) });
     focusIMEAt(e.clientX, e.clientY);
   });
 
-  stageEl.addEventListener('mouseup', (e) => {
+  window.addEventListener('mouseup', (e) => {
+    if (!isDragging) return;
     e.preventDefault();
-    const pos = mapCoords(e.clientX, e.clientY);
-    sendReliable({ type: 'mouseup', x: pos.x, y: pos.y, button: btnName(e.button), buttons: e.buttons, clickCount: e.detail || 1, modifiers: getModifiers(e) });
+    const pos = computeDragPos(e);
+    const mods = getModifiers(e);
+    // Critical: flush final alignment mousemove strictly BEFORE mouseup on the same ordered channel!
+    flushMoveNow({ x: pos.x, y: pos.y, buttons: 1, modifiers: mods }, true);
+    sendReliable({ type: 'mouseup', x: pos.x, y: pos.y, button: btnName(e.button), buttons: 0, clickCount: e.detail || 1, modifiers: mods });
+    isDragging = false;
+    dragLastPos = null;
+    dragVirtualPos = null;
   });
 
   stageEl.addEventListener('contextmenu', (e) => e.preventDefault());

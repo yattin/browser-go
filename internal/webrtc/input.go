@@ -117,15 +117,23 @@ func TranslateInputEvent(ev InputEvent, remoteOS string) []CDPCommand {
 
 	switch ev.Type {
 	case "mousemove":
+		params := map[string]any{
+			"type":      "mouseMoved",
+			"x":         ev.X,
+			"y":         ev.Y,
+			"modifiers": mods,
+			"buttons":   ev.Buttons,
+		}
+		if (ev.Buttons & 1) != 0 {
+			params["button"] = "left"
+		} else if (ev.Buttons & 2) != 0 {
+			params["button"] = "right"
+		} else if (ev.Buttons & 4) != 0 {
+			params["button"] = "middle"
+		}
 		return []CDPCommand{{
 			Method: "Input.dispatchMouseEvent",
-			Params: map[string]any{
-				"type":      "mouseMoved",
-				"x":         ev.X,
-				"y":         ev.Y,
-				"modifiers": mods,
-				"buttons":   ev.Buttons,
-			},
+			Params: params,
 		}}
 
 	case "mousedown":

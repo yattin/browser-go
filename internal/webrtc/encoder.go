@@ -249,6 +249,10 @@ func (e *H264PipeEncoder) feedLoop() {
 	defer func() { _ = e.stdin.Close() }()
 
 	minInterval := time.Second / time.Duration(e.fps)
+	if minInterval > 16*time.Millisecond {
+		// Allow up to 60Hz burst frame delivery during interactive dragging for ultra-low visual lag
+		minInterval = 16 * time.Millisecond
+	}
 	// Smart adaptive keepalive: fast 400ms warm-up for first 3 static frames so WebRTC decodes instantly,
 	// then back off to 3s while page is idle to cut static CPU & uplink overhead by >80%.
 	const fastIdle = 400 * time.Millisecond

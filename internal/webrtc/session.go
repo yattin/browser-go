@@ -336,8 +336,8 @@ func ServeTakeoverSession(
 	}()
 
 	enqueueInput := func(ev InputEvent) {
-		// Mouse moves may be dropped when queue is saturated; reliable events wait briefly
-		if ev.Type == "mousemove" {
+		// Only drop hover mousemoves when queue is saturated; NEVER drop active drag moves (ev.Buttons != 0)
+		if ev.Type == "mousemove" && ev.Buttons == 0 {
 			select {
 			case inputCh <- ev:
 			default:
