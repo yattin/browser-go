@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"browser-go/internal/logger"
+	"browser-go/internal/qinghu"
 )
 
 var (
@@ -141,9 +142,11 @@ func ValidateTargetID(id string) error {
 
 // LaunchParams represents the JSON `launch` query parameter.
 type LaunchParams struct {
-	User     string   `json:"user,omitempty"`
-	Args     []string `json:"args,omitempty"`
-	Headless *bool    `json:"headless,omitempty"`
+	User          string   `json:"user,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	Headless      *bool    `json:"headless,omitempty"`
+	Provider      string   `json:"provider,omitempty"`      // "chrome" (default) or "qinghu" (Qinghu Anti-Detect Browser)
+	QinghuProfile string   `json:"qinghuProfile,omitempty"` // explicit Qinghu shop profile name or ID
 }
 
 // VersionInfo represents Chrome's `/json/version` payload.
@@ -181,6 +184,8 @@ type StatsSnapshot struct {
 type ManagedInstance struct {
 	Key         string
 	IsEphemeral bool
+	IsQinghu    bool
+	QinghuID    string
 	DebugPort   int
 	WSURL       string
 	UserDataDir string
@@ -249,6 +254,8 @@ type ManagerConfig struct {
 	InactiveCheckInterval time.Duration
 	ChromePath            string
 	DefaultHeadless       bool
+	QinghuEnabled         bool
+	QinghuDataDir         string
 	DataDir               string
 	Logger                *logger.Logger
 
@@ -270,6 +277,7 @@ type Manager struct {
 	cfg        ManagerConfig
 	log        *logger.Logger
 	httpClient *http.Client
+	qinghuCli  *qinghu.Client
 
 	mu        sync.Mutex
 	instances map[string]*ManagedInstance
@@ -308,6 +316,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		httpClient: &http.Client{
 			Timeout: 1500 * time.Millisecond,
 		},
+		qinghuCli: qinghu.NewClient(cfg.QinghuDataDir),
 		instances: make(map[string]*ManagedInstance),
 		inflight:  make(map[string]*inflightLaunch),
 		stopCh:    make(chan struct{}),
@@ -354,6 +363,18 @@ func (m *Manager) Acquire(ctx context.Context, startingURL string, params Launch
 		return nil, nil, err
 	}
 	startingURL = safeURL
+
+	// Route to Qinghu Anti-Detect Fingerprint Browser Agent when --qinghu is active or explicitly requested in launch params
+	if m.cfg.QinghuEnabled || strings.EqualFold(strings.TrimSpace(params.Provider), "qinghu") || strings.TrimSpace(params.QinghuProfile) != "" {
+		profileQuery := strings.TrimSpace(params.QinghuProfile)
+		if profileQuery == "" {
+			profileQuery = strings.TrimSpace(params.User)
+		}
+		if profileQuery == "" {
+			return nil, nil, errors.New("qinghu mode requires launch.user or launch.qinghuProfile (shop profile name or ID)")
+		}
+		return m.acquireQinghu(ctx, profileQuery)
+	}
 
 	safeArgs, err := SanitizeLaunchArgs(params.Args)
 	if err != nil {
@@ -453,6 +474,115 @@ func (m *Manager) Acquire(ctx context.Context, startingURL string, params Launch
 	}
 
 	return nil, nil, errors.New("failed to acquire Chrome instance after retry")
+}
+
+// acquireQinghu delegates profile startup & anti-detect isolation to the local Qinghu Agent,
+// then binds its DevTools WebSocket into Browser-Go's unified CDP + WebRTC Live View registry.
+func (m *Manager) acquireQinghu(ctx context.Context, profileQuery string) (*ManagedInstance, func(), error) {
+	if m.qinghuCli == nil {
+		return nil, nil, errors.New("qinghu client not initialized")
+	}
+	qhInst, err := m.qinghuCli.EnsureStarted(ctx, profileQuery)
+	if err != nil {
+		return nil, nil, err
+	}
+	port := qhInst.Runtime.DebugPort
+	wsURL, ok := m.probeReadyWSURL(ctx, port, "")
+	if !ok {
+		return nil, nil, fmt.Errorf("qinghu profile %q DevTools port %d not ready", qhInst.Name, port)
+	}
+
+	key := qhInst.Name
+	if key == "" {
+		key = qhInst.ID
+	}
+
+	m.mu.Lock()
+	existing, exists := m.instances[key]
+	if exists && !existing.closing.Load() && existing.DebugPort == port {
+		existing.WSURL = wsURL
+		existing.IsQinghu = true
+		existing.QinghuID = qhInst.ID
+		existing.activeConns.Add(1)
+		existing.Touch()
+		m.mu.Unlock()
+		m.log.Infof("Attached to Qinghu Fingerprint Browser [%s] (id=%s, port=%d)", key, qhInst.ID, port)
+		return existing, m.makeReleaseFunc(existing), nil
+	}
+
+	inst := &ManagedInstance{
+		Key:         key,
+		IsEphemeral: false,
+		IsQinghu:    true,
+		QinghuID:    qhInst.ID,
+		DebugPort:   port,
+		WSURL:       wsURL,
+		CreatedAt:   time.Now(),
+	}
+	inst.activeConns.Store(1)
+	inst.Touch()
+	m.instances[key] = inst
+	m.mu.Unlock()
+
+	m.log.Infof("Connected Qinghu Fingerprint Browser [%s] (id=%s, port=%d)", key, qhInst.ID, port)
+	return inst, m.makeReleaseFunc(inst), nil
+}
+
+// syncRunningQinghuProfiles mirrors already-running Qinghu shop profiles into the node registry
+// so /dashboard and WebRTC Live View can immediately discover and attach to them.
+func (m *Manager) syncRunningQinghuProfiles() {
+	if !m.cfg.QinghuEnabled || m.qinghuCli == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	list, err := m.qinghuCli.ListInstances(ctx)
+	if err != nil {
+		return
+	}
+
+	liveKeys := make(map[string]struct{}, len(list))
+	for _, qh := range list {
+		if qh.Status != "running" || qh.Runtime == nil || qh.Runtime.DebugPort <= 0 {
+			continue
+		}
+		key := qh.Name
+		if key == "" {
+			key = qh.ID
+		}
+		liveKeys[key] = struct{}{}
+
+		m.mu.Lock()
+		cur, ok := m.instances[key]
+		if !ok || cur.DebugPort != qh.Runtime.DebugPort {
+			wsURL, ready := m.probeReadyWSURL(ctx, qh.Runtime.DebugPort, "")
+			if ready {
+				inst := &ManagedInstance{
+					Key:         key,
+					IsEphemeral: false,
+					IsQinghu:    true,
+					QinghuID:    qh.ID,
+					DebugPort:   qh.Runtime.DebugPort,
+					WSURL:       wsURL,
+					CreatedAt:   time.Now(),
+				}
+				inst.Touch()
+				m.instances[key] = inst
+			}
+		}
+		m.mu.Unlock()
+	}
+
+	// Evict any previously synced Qinghu profiles that were stopped externally in Qinghu GUI
+	m.mu.Lock()
+	for k, inst := range m.instances {
+		if inst.IsQinghu {
+			if _, alive := liveKeys[k]; !alive {
+				delete(m.instances, k)
+			}
+		}
+	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) makeReleaseFunc(inst *ManagedInstance) func() {
@@ -662,6 +792,12 @@ func (m *Manager) KillInstance(userKey string) (bool, error) {
 	if target == nil {
 		return false, nil
 	}
+	if target.IsQinghu && m.qinghuCli != nil {
+		// Graceful stop via Qinghu Agent so E2EE cloud cookies are uploaded & lease lock is released
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return true, m.qinghuCli.StopInstance(stopCtx, target.QinghuID)
+	}
 	err := target.Proc.Kill()
 	if target.IsEphemeral && target.UserDataDir != "" {
 		removeDirWithRetry(target.UserDataDir)
@@ -830,6 +966,7 @@ func (m *Manager) CloseTarget(ctx context.Context, userKey, targetID string) err
 
 // ListInstances returns snapshots of all active Chrome instances, probing current URLs concurrently with a 1s TTL cache.
 func (m *Manager) ListInstances() []InstanceSnapshot {
+	m.syncRunningQinghuProfiles()
 	now := time.Now()
 	m.mu.Lock()
 	type instPair struct {
@@ -958,7 +1095,7 @@ func (m *Manager) CleanupInactive() int {
 
 	m.mu.Lock()
 	for k, inst := range m.instances {
-		if inst.ActiveConnections() > 0 {
+		if inst.IsQinghu || inst.ActiveConnections() > 0 {
 			continue
 		}
 		if now.Sub(inst.LastActivity()) > m.cfg.InstanceTimeout {
@@ -1000,6 +1137,10 @@ func (m *Manager) Shutdown() {
 
 	var killWG sync.WaitGroup
 	for _, inst := range all {
+		if inst.IsQinghu || inst.Proc == nil {
+			// Do not hard-kill Qinghu Agent-managed shop windows on browser-go shutdown
+			continue
+		}
 		killWG.Add(1)
 		go func(target *ManagedInstance) {
 			defer killWG.Done()

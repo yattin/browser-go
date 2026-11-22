@@ -205,6 +205,8 @@ func runNode(cfg config.NodeConfig) error {
 		InactiveCheckInterval: cfg.InactiveCheckInterval,
 		ChromePath:            cfg.ChromePath,
 		DefaultHeadless:       cfg.Headless,
+		QinghuEnabled:         cfg.QinghuEnabled,
+		QinghuDataDir:         cfg.QinghuDataDir,
 		DataDir:               cfg.DataDir,
 		Logger:                log,
 	})
@@ -430,6 +432,8 @@ Worker Node Options:
   --strict-auth                    Enforce token on loopback management/extension endpoints too
   --chrome-path=<path>             Explicit Chrome / Chromium / Edge / Brave executable path
   --headless                       Launch browsers in --headless=new mode by default
+  --qinghu                         Enable Qinghu Anti-Detect Fingerprint Browser Agent integration
+  --qinghu-data-dir=<dir>          Override Qinghu Agent data directory (default: %%LOCALAPPDATA%%\Qinghu)
   --daemon                         Detach and run silently in the background (writes PID file)
   --cdp-logging                    Enable detailed CDP relay frame logging
   --node-id=<id>                   Unique node identifier

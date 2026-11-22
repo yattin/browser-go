@@ -74,6 +74,8 @@ type NodeConfig struct {
 	CDPLogging            bool
 	ChromePath            string
 	Headless              bool
+	QinghuEnabled         bool
+	QinghuDataDir         string
 	DataDir               string
 	NodeID                string
 	Tags                  map[string]string
@@ -412,6 +414,14 @@ func parseNodeFlags(cmd *Command, args []string) error {
 			n.ChromePath = v
 		case "headless":
 			n.Headless = parseBoolVal(hasVal, val)
+		case "qinghu":
+			n.QinghuEnabled = parseBoolVal(hasVal, val)
+		case "qinghu-data-dir":
+			v, err := nextVal(args, &i, val, hasVal)
+			if err != nil {
+				return err
+			}
+			n.QinghuDataDir = v
 		case "data-dir":
 			v, err := nextVal(args, &i, val, hasVal)
 			if err != nil {
