@@ -204,6 +204,20 @@ type ManagedInstance struct {
 	cachedAt    time.Time
 }
 
+// GetWSURL returns the instance's browser-level CDP WebSocket URL safely.
+func (m *ManagedInstance) GetWSURL() string {
+	m.metaMu.Lock()
+	defer m.metaMu.Unlock()
+	return m.WSURL
+}
+
+// SetWSURL updates the instance's browser-level CDP WebSocket URL safely.
+func (m *ManagedInstance) SetWSURL(wsURL string) {
+	m.metaMu.Lock()
+	m.WSURL = wsURL
+	m.metaMu.Unlock()
+}
+
 // TryAcquireTakeover reserves one WebRTC Live View slot up to maxConcurrent per Chrome instance.
 func (m *ManagedInstance) TryAcquireTakeover(maxConcurrent int32) (func(), bool) {
 	if m == nil || maxConcurrent <= 0 {
@@ -404,8 +418,8 @@ func (m *Manager) Acquire(ctx context.Context, startingURL string, params Launch
 				existing.Touch()
 				m.mu.Unlock()
 
-				if wsURL, ok := m.probeReadyWSURL(ctx, existing.DebugPort, existing.WSURL); ok {
-					existing.WSURL = wsURL
+				if wsURL, ok := m.probeReadyWSURL(ctx, existing.DebugPort, existing.GetWSURL()); ok {
+					existing.SetWSURL(wsURL)
 					m.log.Infof("Reusing warm Chrome instance for user %q (port=%d, active=%d)", key, existing.DebugPort, existing.ActiveConnections())
 					return existing, m.makeReleaseFunc(existing), nil
 				}
@@ -503,7 +517,7 @@ func (m *Manager) acquireQinghu(ctx context.Context, profileQuery string) (*Mana
 	m.mu.Lock()
 	existing, exists := m.instances[key]
 	if exists && !existing.closing.Load() && existing.DebugPort == port {
-		existing.WSURL = wsURL
+		existing.SetWSURL(wsURL)
 		existing.IsQinghu = true
 		existing.QinghuID = qhInst.ID
 		existing.activeConns.Add(1)

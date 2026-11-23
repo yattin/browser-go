@@ -453,7 +453,7 @@ func (s *NodeServer) handleBrowserAttach(w http.ResponseWriter, r *http.Request)
 	}
 	defer release()
 
-	targetWS := inst.WSURL
+	targetWS := inst.GetWSURL()
 	if tid := strings.TrimSpace(r.URL.Query().Get("target_id")); tid != "" {
 		if targets, tErr := s.chromeMgr.ListTargets(r.Context(), userID); tErr == nil {
 			for _, t := range targets {
@@ -769,7 +769,7 @@ func (s *NodeServer) handleBrowserLaunchWS(w http.ResponseWriter, r *http.Reques
 	s.ActiveWSConns.Add(1)
 	defer s.ActiveWSConns.Add(-1)
 
-	if err := wsutil.ProxyRawWebSocket(r.Context(), w, r, inst.WSURL, nil, inst.Touch); err != nil {
+	if err := wsutil.ProxyRawWebSocket(r.Context(), w, r, inst.GetWSURL(), nil, inst.Touch); err != nil {
 		s.log.Debugf("CDP WebSocket proxy ended for [%s]: %v", inst.Key, err)
 	}
 }
