@@ -93,6 +93,9 @@ jobs:
           if [ -d ./extension ]; then
             (cd extension && zip -r ../release/browser-go-chrome-extension.zip .)
           fi
+          if [ -d ".agents/skills/browser-go" ]; then
+            (cd .agents/skills && zip -r "$GITHUB_WORKSPACE/release/browser-go-skill.zip" browser-go)
+          fi
           (cd release && sha256sum * > SHA256SUMS.txt)
           ls -lh release/
           cat release/SHA256SUMS.txt
