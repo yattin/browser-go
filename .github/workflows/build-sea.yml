@@ -1,4 +1,4 @@
-name: Build Go Executables
+name: Build & Release Browser-Go
 
 on:
   push:
@@ -18,7 +18,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
+          cache: true
       - name: Run Unit & Integration Tests
         run: go test -v -race ./...
 
@@ -36,6 +37,7 @@ jobs:
           - goos: windows
             goarch: amd64
             binary_name: browser-go-windows-amd64.exe
+            noconsole_name: browser-go-windows-amd64-noconsole.exe
           - goos: darwin
             goarch: amd64
             binary_name: browser-go-macos-amd64
@@ -48,7 +50,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
+          cache: true
       - name: Cross-Compile Static Binary
         env:
           CGO_ENABLED: '0'
@@ -56,11 +59,20 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p binary
-          go build -trimpath -ldflags="-s -w" -o binary/${{ matrix.binary_name }} ./cmd/browser-go
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            VERSION="2.0.0-${GITHUB_SHA::7}"
+          fi
+          LDFLAGS="-s -w -X browser-go.AppVersion=${VERSION}"
+          go build -trimpath -ldflags="${LDFLAGS}" -o "binary/${{ matrix.binary_name }}" ./cmd/browser-go
+          if [ -n "${{ matrix.noconsole_name }}" ]; then
+            go build -trimpath -ldflags="${LDFLAGS} -H=windowsgui" -o "binary/${{ matrix.noconsole_name }}" ./cmd/browser-go
+          fi
+          ls -lh binary/
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}
-          path: binary/${{ matrix.binary_name }}
+          path: binary/*
           retention-days: 30
 
   release:
@@ -70,13 +82,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: ./artifacts
-      - name: Prepare Release Assets
+      - name: Prepare Release Assets & Checksums
         run: |
           mkdir -p release
           find ./artifacts -type f -exec cp {} ./release/ \;
+          if [ -d ./extension ]; then
+            (cd extension && zip -r ../release/browser-go-chrome-extension.zip .)
+          fi
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          ls -lh release/
+          cat release/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*
